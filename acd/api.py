@@ -337,6 +337,10 @@ class ConvertAcdToL5x(Extract):
     # None inherits the caller context, whose default is upstream-compatible.
     rx_attribute_layout: Union[str, None] = None
 
+    # Compatibility preview mode returns a false ConversionResult and emits warnings.
+    # Set False to require a complete conversion before writing any L5X.
+    allow_incomplete: bool = True
+
     def extract(self):
         from acd.record.attribute_bounds import attribute_layout
         with attribute_layout(self.rx_attribute_layout):
@@ -346,7 +350,10 @@ class ConvertAcdToL5x(Extract):
         project = ImportProjectFromFile(
             self.acd_filename, catalog_file=self.catalog_file
         ).import_project()
-        raw_xml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n' + project.to_xml()
+        from acd.l5x.completeness import finish
+        result = finish(project, self.l5x_filename, self.allow_incomplete)
+        prefix = '<!-- INCOMPLETE EXPORT: inspect the diagnostics sidecar before use. -->\n' if not result.complete else ''
+        raw_xml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n' + prefix + project.to_xml()
         if self.pretty_print:
             try:
                 dom = xml.dom.minidom.parseString(raw_xml.encode("utf-8"))
@@ -362,3 +369,4 @@ class ConvertAcdToL5x(Extract):
             output = raw_xml
         with open(self.l5x_filename, "w", encoding="utf-8") as f:
             f.write(output)
+        return result
