@@ -1968,6 +1968,21 @@ class TagBuilder(L5xElementBuilder):
         return resolved
 
     def build(self) -> Tag:
+        tag = self._build_tag()
+        row = self._cur.execute('SELECT record FROM comps WHERE object_id=?',
+                                (self._object_id,)).fetchone()
+        parsed = RxGeneric.from_bytes(bytes(row[0]))
+        if not isinstance(parsed, LegacyRxGeneric) and parsed.cip_type in (0x68, 0x6B, 0x6C):
+            attrs = {a.attribute_id: bytes(a.value) for a in parsed.extended_records}
+            if 0x65 in attrs:
+                tag.tag_type = 'Alias'
+                tag.alias_for = self._legacy_alias_for(attrs[0x65])
+                tag.data_type = None
+                tag.constant = None
+                tag.dimensions = None
+        return tag
+
+    def _build_tag(self) -> Tag:
         self._cur.execute(
             "SELECT comp_name, object_id, parent_id, record FROM comps WHERE object_id="
             + str(self._object_id)
@@ -1992,7 +2007,7 @@ class TagBuilder(L5xElementBuilder):
                 results[0][0], results[0][0], "Base", "", None, external_access, constant, None, 0, []
             )
 
-        if r.cip_type != 0x6B and r.cip_type != 0x68:
+        if r.cip_type not in (0x6B, 0x68, 0x6C):
             return Tag(
                 results[0][0], results[0][0], "Base", "", None, external_access, constant, None, 0, []
             )

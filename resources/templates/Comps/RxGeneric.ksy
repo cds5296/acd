@@ -25,6 +25,7 @@ seq:
       cases:
         0x68: rx_tag
         0x6B: rx_tag
+        0x6C: rx_tag
         _: unknown
   - id: len_record
     type: u4
