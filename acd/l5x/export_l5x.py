@@ -187,7 +187,9 @@ class ExportL5x:
                 self._cur, _catalog_table=self._catalog_table, _rung_keys=self._rung_keys
             ).build()
             from acd.l5x.numeric_values import materialize
+            from acd.l5x.annotations import materialize as materialize_annotations
             materialize(self._controller, self._cur)
+            materialize_annotations(self._controller, self._cur)
         return self._controller
 
     def st_decoder(self) -> "STDecoder": # noqa

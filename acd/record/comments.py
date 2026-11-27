@@ -1,5 +1,6 @@
 import re
 import struct
+from loguru import logger
 from dataclasses import dataclass
 from sqlite3 import Cursor
 from typing import Optional
@@ -62,6 +63,7 @@ class CommentsRecord:
     def parse(dat_record: DatRecord) -> Optional[tuple]:
         if dat_record.identifier != 64250:
             return None
+        r = None
         try:
             r = FafaComents.from_bytes(dat_record.record.record_buffer)
             # Type-12 (0x0C) records carry UDI metadata such as the AOI RevisionNote.
@@ -87,6 +89,53 @@ class CommentsRecord:
                 )
             if r.header.record_type in (0x03, 0x04, 0x0D, 0x0E):
                 tag_ref = r.body.tag_reference.value
+                # Tag routing key: unknown_1 bytes [2:4] identifies which tag
+                # this comment belongs to within a program (matches the tag's
+                # record_buffer[2:4]).  Stored in member_ref for filtering.
+                _u1 = bytes(r.body.unknown_1)
+                _tag_routing_key = struct.unpack_from("<H", _u1, 2)[0] if len(_u1) >= 4 else 0
+            elif r.header.record_type in (5, 6, 7, 8, 9, 10, 11, 15, 16, 17, 19):
+                # Types 5-11, 15-17, 19: tag operand comment records.
+                # Binary layout (body = raw bytes after the 10-byte header):
+                #   [0:8]   8 bytes unknown (zeros)
+                #   [8:12]  u32 object_id
+                #   [12:14] u16 flags (usually 0x0001)
+                #   [14:16] 2 bytes padding
+                #   [16:]   UTF-16LE null-terminated tag_reference (operand path)
+                #   [after null + padding] ASCII null-terminated record_string
+                # Operand path examples by type:
+                #   5: [44]     6: [1].0     7: [1].15    8: [156].8
+                #   9: [173].14  11: .!hex   15: .!hex[N]  16: .!hex[N]
+                #   17: .!hex[N].bit   10/19: metadata keys
+                body = bytes(r.body)
+                if len(body) < 18:
+                    raise ValueError("Short operand annotation")
+                obj_id = struct.unpack_from("<I", body, 8)[0]
+                _tag_routing_key = struct.unpack_from("<H", body, 2)[0]
+                pos = 16
+                while pos + 2 <= len(body) and body[pos:pos + 2] != b"\x00\x00":
+                    pos += 2
+                if pos + 2 > len(body):
+                    raise ValueError("Unterminated annotation operand")
+                tag_ref = body[16:pos].decode("utf-16-le")
+                pos += 2
+                while pos < len(body) and body[pos] == 0:
+                    pos += 1
+                text_end = body.find(b"\x00", pos)
+                if pos < len(body) and text_end < 0:
+                    raise ValueError("Unterminated annotation text")
+                record_string = body[pos:text_end].decode("utf-8")
+                return (
+                    r.header.seq_number,
+                    r.header.sub_record_length,
+                    obj_id,
+                    record_string,
+                    r.header.record_type,
+                    r.header.parent,
+                    tag_ref,
+                    0,                    # rung_content (not applicable)
+                    _tag_routing_key,     # member_ref = tag routing key
+                )
             else:
                 tag_ref = ""
             # For AsciiRecord (type 1 or 2), extract bytes [4:8] of unknown_1.
@@ -97,11 +146,13 @@ class CommentsRecord:
             else:
                 rung_content = 0
             # Extract bytes [0:4] of unknown_1 as member_ref.
-            # For the object's own description (DataType, AOI, etc.) this is zero.
-            # For sub-element descriptions (UDT members, AOI parameters/local tags)
-            # this is non-zero, enabling callers to filter to just the object-level description.
+            # For type 1/2: low16 = 0x006D for rung comments, high16 = routine key.
+            # For type 3/4/13/14: tag routing key from body[2:4] (identifies which
+            # tag this comment belongs to within a program).
             if r.header.record_type in (0x01, 0x02) and len(bytes(r.body.unknown_1)) >= 4:
                 member_ref = struct.unpack_from("<I", bytes(r.body.unknown_1), 0)[0]
+            elif r.header.record_type in (0x03, 0x04, 0x0D, 0x0E):
+                member_ref = _tag_routing_key
             else:
                 member_ref = 0
             return (
@@ -115,7 +166,9 @@ class CommentsRecord:
                 rung_content,
                 member_ref,
             )
-        except Exception:
+        except Exception as exc:
+            logger.warning("Unreadable comment record (sequence {}): {}",
+                           r.header.seq_number if r is not None else None, exc)
             return None
 
     def replace_tag_references(self, sb_rec):
