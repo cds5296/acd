@@ -581,7 +581,7 @@ class Tag(L5xElement):
         parts = []
         for ch in text:
             cp = ord(ch)
-            if ch in ("\t", "\n", "\r") or (0x20 <= cp <= 0xD7FF) or (0xE000 <= cp <= 0xFFFD):
+            if ch in ("\t", "\n", "\r") or (0x20 <= cp <= 0xD7FF) or (0xE000 <= cp <= 0xFFFD) or (0x10000 <= cp <= 0x10FFFF):
                 parts.append(ch)
             else:
                 parts.append(f"&#x{cp:04X};")
@@ -591,14 +591,13 @@ class Tag(L5xElement):
         base = super().to_xml()
 
         # --- Description child element ---
-        # Find tag-level description: empty tag_reference means the tag itself.
-        # Tags with multiple empty-ref entries (e.g. array-element bit descriptions
-        # alongside the tag description) store the real tag description as the
-        # longest entry — short entries like "Spare" or "End CIP" are element labels.
-        candidates = [text for ref, text in self._comments if ref in ("", ".") and text]
-        desc_raw = max(candidates, key=len) if candidates else None
-        desc = self._sanitize_xml_text(desc_raw) if desc_raw else None
-        desc_xml = f'<Description>\n<![CDATA[{desc}]]>\n</Description>' if desc else ""
+        from acd.l5x.annotations import cdata, comments_xml
+        descriptions = {text.replace("\r\n", "\n") for ref, text in self._comments
+                        if ref in ("", ".") and text}
+        desc_xml = ""
+        if len(descriptions) == 1:
+            desc_xml = "<Description>\n" + cdata(self._sanitize_xml_text(descriptions.pop())) + "\n</Description>"
+        desc_xml += comments_xml(self)
 
         # --- Data child element(s) ---
         # Scalar primitives get Format="L5K" only.
@@ -1972,6 +1971,11 @@ class TagBuilder(L5xElementBuilder):
         return resolved
 
     def build(self) -> Tag:
+        tag = self._build_tag()
+        tag._source_oid = self._object_id
+        return tag
+
+    def _build_tag(self) -> Tag:
         self._cur.execute(
             "SELECT comp_name, object_id, parent_id, record FROM comps WHERE object_id="
             + str(self._object_id)
