@@ -19,7 +19,7 @@ def test_float_bits_preserved(kind, fmt, bits):
 def test_multidimensional_array_order():
     raw = struct.pack('<6i', 4, 5, 6, 7, 8, 9)
     root = ET.fromstring('<Tag>' + numeric_xml('DINT', '2 3', raw) + '</Tag>')
-    assert root.findtext('Data') == '[[4,5,6],[7,8,9]]'
+    assert root.findtext('Data') == '[4,5,6,7,8,9]'
     assert [e.get('Index') for e in root.findall('.//Element')] == [
         '[0,0]', '[0,1]', '[0,2]', '[1,0]', '[1,1]', '[1,2]']
 

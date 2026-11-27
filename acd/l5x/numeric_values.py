@@ -38,13 +38,8 @@ def numeric_xml(kind, dimension_text, raw):
               struct.iter_unpack('<' + FORMATS[kind], raw)]
     if kind == 'BOOL' and any(v not in ('0', '1') for v in values):
         raise ValueError('Invalid BOOL value')
-    def nested(items, dims):
-        if not dims:
-            return items[0]
-        stride = math.prod(dims[1:]) if len(dims) > 1 else 1
-        return '[' + ','.join(nested(items[i*stride:(i+1)*stride], dims[1:])
-                              for i in range(dims[0])) + ']'
-    l5k = nested(values, shape)
+    # L5K stores array elements in one flat sequence; Dimensions carries shape.
+    l5k = '[' + ','.join(values) + ']' if shape else values[0]
     radix = 'Float' if kind in ('REAL', 'LREAL') else 'Decimal'
     if not shape:
         decorated = f'<DataValue DataType="{kind}" Radix="{radix}" Value="{values[0]}"/>'
