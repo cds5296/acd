@@ -70,6 +70,8 @@ def assess(project):
         issues.append(dict(code='tag-annotation', owner=controller.name, reason=entry[0], source=entry[1:]))
     for aoi in controller.aois:
         issues.extend(getattr(aoi, '_unreadable_routines', []))
+        issues.extend(getattr(aoi, '_declaration_issues', []))
+        add('aoi-configuration', aoi.name, 'AOI class, postscan and enable-in-false settings are not decoded')
     for owner in list(controller.programs) + list(controller.aois):
         for routine in owner.routines:
             if routine.type != 'RLL':
