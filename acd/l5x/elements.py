@@ -1040,6 +1040,7 @@ class Controller(L5xElement):
     # _redundancy_enabled is NOT serialised as a regular XML attribute (underscore prefix
     # skips it in the base to_xml()); it is used only to build the <RedundancyInfo> element.
     _redundancy_enabled: bool = field(default=False)
+    ether_net_ip_mode: Union[str, None] = None
 
     def __post_init__(self):
         super().__post_init__()
@@ -1049,6 +1050,7 @@ class Controller(L5xElement):
             "sfc_last_scan": "SFCLastScan",
             "project_sn": "ProjectSN",
             "can_use_rpi_from_producer": "CanUseRPIFromProducer",
+            "ether_net_ip_mode": "EtherNetIPMode",
         }
 
     def to_xml(self) -> str:
@@ -1071,7 +1073,7 @@ class Controller(L5xElement):
         # Reference files carry an empty <Description> stub as the first child.
         parts = [
             open_tag,
-            "<Description></Description>",
+            getattr(self, "_description_xml", "<Description></Description>"),
             f'<RedundancyInfo Enabled="{redundancy_enabled_str}" KeepTestEditsOnSwitchOver="false"/>',
             '<Security Code="0" ChangesToDetect="16#ffff_ffff_ffff_ffff"/>',
             '<SafetyInfo/>',
@@ -3240,6 +3242,13 @@ class ControllerBuilder(L5xElementBuilder):
         # Diagnostics: controller-scoped tags that could not be faithfully
         # reconstructed (see the tag loop above). Empty when everything parsed.
         controller._skipped_tags = skipped_tags
+        from acd.l5x.controller_fields import description_xml, topology
+        controller._description_xml = description_xml(comment_results)
+        controller._metadata_problems = []
+        try:
+            controller.ether_net_ip_mode = topology(extended_records.get(0x7C))
+        except ValueError as exc:
+            controller._metadata_problems.append(str(exc))
         return controller
 
 
