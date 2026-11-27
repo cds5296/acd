@@ -1710,7 +1710,7 @@ class ModuleBuilder(L5xElementBuilder):
             name,           # L5xElement._name (private)
             name,           # Module.name
             catalog_number_for_identity(
-                (vendor, product_type, product_code), table=self._catalog_table
+                (vendor, product_type, product_code), table=self._catalog_table, major_revision=major
             ),
             vendor,
             product_type,
