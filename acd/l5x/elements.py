@@ -2359,7 +2359,7 @@ def routine_type_enum(idx: int) -> str:
 
 @dataclass
 class RoutineBuilder(L5xElementBuilder):
-    _ast_rung_keys: Optional[Dict[int, Optional[int]]] = None
+    _rung_keys: Optional[Dict[int, Optional[int]]] = None
 
     def build(self) -> Routine:
         self._cur.execute(
@@ -2411,7 +2411,7 @@ class RoutineBuilder(L5xElementBuilder):
                 rungs = [_resolve(r) if r else r for r in rungs]
 
         # The parent can be shared by routines. member_ref identifies the routine,
-        # and the high half of rung_content identifies its REGION AST tail.
+        # and the high half of rung_content identifies the rung in the AST or a scoped region link.
         routine_key = struct.unpack_from("<H", r.record_buffer, 2)[0]
         self._cur.execute(
             "SELECT object_id, record_string, rung_content FROM comments "
@@ -2419,17 +2419,17 @@ class RoutineBuilder(L5xElementBuilder):
             ((r.comment_id << 16) | r.cip_type, (routine_key << 16) | 0x6D),
         )
         comments = [(oid, text, content) for oid, text, content in self._cur if text]
-        ast = self._ast_rung_keys or {}
+        keys = self._rung_keys or {}
         indices = {}
         for index, rung_id in enumerate(rung_ids):
-            key = ast.get(rung_id)
+            key = keys.get(rung_id)
             if key is not None:
                 # A repeated key within this routine has no unique destination.
                 indices[key] = None if key in indices else index
 
         # Only retain the older one-based convention on indexed legacy records
-        # with multiple distinct indices and no AST evidence for this routine.
-        indexed = (isinstance(r, LegacyRxGeneric) and not any(oid in ast for oid in rung_ids)
+        # with multiple distinct indices and no source key for this routine.
+        indexed = (isinstance(r, LegacyRxGeneric) and not any(oid in keys for oid in rung_ids)
                    and len({oid for oid, _, _ in comments}) > 1)
         candidates = {}
         unresolved = 0
@@ -2536,7 +2536,7 @@ def _parse_aoi_nameless(data: bytes) -> dict:
 
 @dataclass
 class AoiBuilder(L5xElementBuilder):
-    _ast_rung_keys: Optional[Dict[int, Optional[int]]] = None
+    _rung_keys: Optional[Dict[int, Optional[int]]] = None
 
     def build(self) -> AOI:
         self._cur.execute(
@@ -2638,7 +2638,7 @@ class AoiBuilder(L5xElementBuilder):
             )
             for (child_oid,) in self._cur.fetchall():
                 try:
-                    routines.append(RoutineBuilder(self._cur, child_oid, self._ast_rung_keys).build())
+                    routines.append(RoutineBuilder(self._cur, child_oid, self._rung_keys).build())
                 except Exception:
                     pass
 
@@ -2684,7 +2684,7 @@ class ProgramBuilder(L5xElementBuilder):
     _data_types_map: Dict[str, "DataType"] = field(default_factory=dict)
     _redundancy_enabled: bool = field(default=False)
 
-    _ast_rung_keys: Optional[Dict[int, Optional[int]]] = None
+    _rung_keys: Optional[Dict[int, Optional[int]]] = None
 
     def build(self) -> Program:
         self._cur.execute(
@@ -2743,7 +2743,7 @@ class ProgramBuilder(L5xElementBuilder):
 
         routines = []
         for child in routine_results:
-            routines.append(RoutineBuilder(self._cur, child[1], self._ast_rung_keys).build())
+            routines.append(RoutineBuilder(self._cur, child[1], self._rung_keys).build())
 
         # Get the Program Scoped Tags
         tag_collection_id = _required_program_collection(
@@ -2882,7 +2882,7 @@ class ControllerBuilder(L5xElementBuilder):
     # CatalogNumbers and the controller ProcessorType. None -> built-in only.
     _catalog_table: Union[Dict[Tuple[int, int, int], str], None] = None
 
-    _ast_rung_keys: Optional[Dict[int, Optional[int]]] = None
+    _rung_keys: Optional[Dict[int, Optional[int]]] = None
 
     def build(self) -> Controller:
         self._cur.execute(
@@ -3081,7 +3081,7 @@ class ControllerBuilder(L5xElementBuilder):
         for result in program_records:
             _program_object_id = result[1]
             programs.append(
-                ProgramBuilder(self._cur, _program_object_id, data_types_map, redundancy_enabled, self._ast_rung_keys).build()
+                ProgramBuilder(self._cur, _program_object_id, data_types_map, redundancy_enabled, self._rung_keys).build()
             )
 
         # Build task schedule ID → program name map. Legacy projects keep this
@@ -3117,7 +3117,7 @@ class ControllerBuilder(L5xElementBuilder):
         aois: List[AOI] = []
         for result in results:
             _aoi_object_id = result[1]
-            aois.append(AoiBuilder(self._cur, _aoi_object_id, self._ast_rung_keys).build())
+            aois.append(AoiBuilder(self._cur, _aoi_object_id, self._rung_keys).build())
 
         # Get the Module (IO) Collection and build all Module elements.
         self._cur.execute(

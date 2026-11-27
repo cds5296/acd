@@ -23,6 +23,7 @@ from acd.record.comments import CommentsRecord
 from acd.record.comps import CompsRecord
 from acd.record.nameless import NamelessRecord
 from acd.record.sbregion import SbRegionRecord
+from acd.record.rung_links import supplement_rung_keys
 
 
 @dataclass
@@ -137,8 +138,8 @@ class ExportL5x:
             "Getting records from ACD SbRegion file and storing in sqllite database"
         )
         sb_region_db = DbExtract(os.path.join(self._temp_dir, "SbRegion.Dat")).read()
-        self._ast_rung_keys = {}
-        rung_tuples = [t for record in sb_region_db.records.record if (t := SbRegionRecord.parse(record, name_lookup, self._ast_rung_keys)) is not None]
+        self._rung_keys = {}
+        rung_tuples = [t for record in sb_region_db.records.record if (t := SbRegionRecord.parse(record, name_lookup, self._rung_keys)) is not None]
         self._cur.executemany("INSERT INTO rungs VALUES (?,?,?)", rung_tuples)
         self._db.commit()
 
@@ -177,11 +178,13 @@ class ExportL5x:
         self._cur.execute("CREATE INDEX idx_comments_parent ON comments(parent)")
         self._db.commit()
 
+        supplement_rung_keys(Path(self._temp_dir) / "RegnLink.Dat", self._cur, self._rung_keys)
+
     @property
     def controller(self):
         if self._controller is None:
             self._controller = ControllerBuilder(
-                self._cur, _catalog_table=self._catalog_table, _ast_rung_keys=self._ast_rung_keys
+                self._cur, _catalog_table=self._catalog_table, _rung_keys=self._rung_keys
             ).build()
         return self._controller
 

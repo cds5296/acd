@@ -101,3 +101,51 @@ def test_multiline_comment_survives_windows_text_output(routine, tmp_path):
     with path.open('w', encoding='utf-8', newline='\r\n') as out:
         out.write(result.to_xml())
     assert ET.parse(path).findtext('RLLContent/Rung[@Number="1"]/Comment') == ' leading\n\nline ]]> end\n '
+
+
+def test_link_only_public_project_keeps_scoped_comment(tmp_path):
+    from pathlib import Path
+    import xml.etree.ElementTree as ET
+    from acd.api import ConvertAcdToL5x
+
+    resources = Path(__file__).resolve().parents[1] / 'resources'
+    result = tmp_path / 'output.L5X'
+    ConvertAcdToL5x(resources / 'ACDTestsWithAOI.ACD', result).extract()
+    path = "Controller/Programs/Program[@Name='MainProgram']/Routines/Routine[@Name='MainRoutine']/RLLContent/Rung"
+    expected = ET.parse(resources / 'ACDTestsWithAOI.L5X').findall(path)
+    actual = ET.parse(result).findall(path)
+    assert [(r.get('Number'), r.findtext('Comment')) for r in actual if r.find('Comment') is not None] == [
+        (r.get('Number'), r.findtext('Comment')[1:-1])
+        for r in expected if r.find('Comment') is not None]
+
+
+@pytest.mark.parametrize('corrupt_extent', [False, True])
+def test_link_joins_owner_and_rung_and_rejects_ambiguity(tmp_path, corrupt_extent, routine):
+    from acd.record.rung_links import supplement_rung_keys
+
+    flag = bytes.fromhex('000002000001')
+    rows = [(flag, 12, 100, 102, 0xffffffff), (flag, 10, 555, 101, 102),
+            (flag, 8, 100, 103, 101), (flag, 9, 100, 103, 101)]
+    raw = bytearray(128)
+    raw[40:52] = bytes.fromhex('81000000 1600ffff 12001000')
+    struct.pack_into('<II', raw, 8, 127 + 22 * len(rows), 60)
+    struct.pack_into('<I', raw, 24, len(rows) + int(corrupt_extent))
+    raw[60:62] = raw[96:98] = b'\xfe\xfe'
+    struct.pack_into('<I', raw, 78, 96)
+    struct.pack_into('<I', raw, 98, 32)
+    for row in rows:
+        raw.extend(struct.pack('<6sIIII', *row))
+    path = tmp_path / 'links.dat'
+    path.write_bytes(raw)
+    db = sqlite3.connect(':memory:')
+    try:
+        db.executescript('CREATE TABLE region_map(parent_id,object_id); CREATE TABLE rungs(object_id);'
+                         'INSERT INTO region_map VALUES(100,101),(100,102),(100,103);'
+                         'INSERT INTO rungs VALUES(101),(102),(103);')
+        keys = {}
+        supplement_rung_keys(path, db.cursor(), keys)
+    finally:
+        db.close()
+    assert keys == ({} if corrupt_extent else {102: 12, 103: None})
+    result = routine(keys, [(1, 'Second', 12, 0, 0, 1)])
+    assert result._rung_comments == ({} if corrupt_extent else {1: 'Second'})
