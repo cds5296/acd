@@ -1,217 +1,195 @@
-"""st_decoder.py — Production ST routine decoder for Rockwell .ACD files.
+"""Ordered ST source from Nameless.Dat, adapted from hutcheb/acd PRs 58/68.
 
-Extracts ordered Structured Text (ST) source from the Nameless.Dat binary
-entirely from the ACD's internal structure — no L5X export or ground truth needed.
+Follow routine -> descriptor -> aspect -> source index -> line records. Index
+order, not database insertion order, determines source order. Unlike the upstream
+decoder, require the counted source-index layout and retain unreadable line
+positions in diagnostics. Resolve module-reference tags through their 0x66 link
+to a module in the same controller; never rewrite names by prefix.
 
-Algorithm
----------
-The ordering information is in an "index record" — a packed little-endian
-array of 4-byte object_ids that list line records in correct source order.
-
-Full chain from a routine's comps object_id to its ordered source:
-
-    routine comps id                   (in Comps.Dat)
-      → descriptor                     (nameless row, parent_id = routine comps id, ~38 bytes)
-        → aspect                       (nameless row, parent_id = descriptor, ~40 bytes)
-          → index record               (nameless row, parent_id = aspect, larger; its own
-                                        object_id appears as parent_id for line records)
-            → line text records        (nameless rows, parent_id = index record oid)
-
-Each index record's payload starting at byte 22 is a packed list of 4-byte
-little-endian object_ids referencing the line records in correct source order.
-
-Public API
-----------
-    from st_decoder import STDecoder
-    dec = STDecoder(exp)           # exp = ExportL5x instance
-    routines = dec.all_routines()  # list of (name, comps_id, lines)
-    lines = dec.decode(comps_id)   # ordered list of str, or None
+Upstream: https://github.com/hutcheb/acd/pull/58 and /pull/68 (Apache-2.0).
 """
-from __future__ import annotations
-import struct
 import re
+import struct
 from collections import defaultdict
-from typing import Optional
+
+from acd.record.rx import RxGeneric
 
 
-# ── Low-level helpers ────────────────────────────────────────────────────────
+_REFERENCE = re.compile(r"@([0-9a-fA-F]{1,8})@")
+_ILLEGAL_XML = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\ufffe\uffff]")
 
-def _decode_line_text(rec: bytes, name_lookup: dict) -> Optional[str]:
-    """Extract the UTF-16LE string from a line-record blob.
 
-    Marker: b'\\xff\\xfe\\xff', then 1-byte length (in UTF-16 code units),
-    then length*2 bytes of UTF-16-LE text.
-    Tag references encoded as @hex_id@ are resolved via name_lookup.
-    Returns None if the record carries no text payload.
+def _decode_line_text(record):
+    """Read the observed fffeff + u8 code-unit count + UTF-16LE layout.
+
+    Validate the entire payload: an unsupported length encoding must be reported
+    rather than quietly returning a truncated line. Empty strings are real lines.
     """
-    idx = rec.find(b"\xff\xfe\xff")
-    if idx == -1 or idx + 4 > len(rec):
-        return None
-    length = rec[idx + 3]
-    sb = rec[idx + 4: idx + 4 + length * 2]
-    if len(sb) < length * 2:
-        return None
-    try:
-        text = sb.decode("utf-16-le")
-    except Exception:
-        return None
-    for tag in re.findall(r"@[0-9a-f]+@", text):
-        tid = int(tag[1:-1], 16)
-        nm = name_lookup.get(tid)
-        if nm:
-            text = text.replace(tag, nm)
+    offset = record.find(b"\xff\xfe\xff")
+    if offset < 0 or offset + 4 > len(record):
+        raise ValueError("missing ST text header")
+    length = record[offset + 3]
+    payload = record[offset + 4:]
+    if len(payload) != length * 2:
+        raise ValueError("ST text length mismatch or unsupported length encoding")
+    text = payload.decode("utf-16-le")
+    if _ILLEGAL_XML.search(text):
+        raise ValueError("ST text contains an XML-illegal character")
     return text
 
 
-def _decode_index_record(idx_rec: bytes, line_recs: dict[int, bytes],
-                          name_lookup: dict) -> list[str]:
-    """Resolve and order the line texts referenced by an index record.
-
-    idx_rec layout:
-      bytes  0-19: header (length, flags, parent_id, self oid, type constant)
-      bytes 20-21: 2 padding/flag bytes
-      bytes 22-  : packed little-endian uint32 object_ids, one per source line
-
-    Notes:
-    - The index record may reference the same object_id more than once (a
-      Rockwell compiler artifact, e.g. for FOR loop body unrolling).  Since the
-      same record object can only represent one logical statement, duplicate
-      oid references are skipped after the first occurrence.
-    - Entries whose oid does not resolve to a known line record are skipped;
-      these reference sub-group anchors or compiled-form records that are not
-      direct children of this index record.
-
-    Returns a list of decoded strings (blank lines are preserved as '').
-    """
-    out: list[str] = []
-    seen: set[int] = set()
-    off = 22
-    while off + 4 <= len(idx_rec):
-        oid = struct.unpack_from("<I", idx_rec, off)[0]
-        off += 4
-        if oid in seen:
-            continue  # duplicate index entry — same line object referenced twice
-        seen.add(oid)
-        rec = line_recs.get(oid)
-        if rec is None:
-            continue  # references a sub-group anchor or out-of-scope record
-        text = _decode_line_text(rec, name_lookup)
-        if text is not None:
-            out.append(text)
-    return out
-
-
-# ── Core decoder ─────────────────────────────────────────────────────────────
-
 class STDecoder:
-    """Decode ordered ST source for all routines in an ACD file.
-
-    Parameters
-    ----------
-    exp : ExportL5x
-        An already-opened ExportL5x object (hutcheb/acd).
-        The decoder does NOT close it; the caller is responsible.
-    """
-
-    def __init__(self, exp):
-        self._name_lookup: dict[int, str] = exp._id_to_name
-        cur = exp._cur
-
-        # ── Load full nameless table into memory once ──────────────────────
+    def __init__(self, exporter):
+        cur = exporter._cur
         cur.execute("SELECT object_id, parent_id, record FROM nameless ORDER BY rowid")
-        rows = [(int(oid), int(pid), bytes(rec))
-                for oid, pid, rec in cur.fetchall()]
+        self._records = {}
+        self._children = defaultdict(list)
+        self._duplicates = set()
+        for oid, parent, raw in cur.fetchall():
+            if oid in self._records:
+                self._duplicates.add(oid)
+            self._records[oid] = bytes(raw)
+            self._children[parent].append(oid)
 
-        # Forward and reverse maps
-        self._oid_to_pid: dict[int, int] = {oid: pid for oid, pid, _ in rows}
-        self._oid_to_rec: dict[int, bytes] = {oid: rec for oid, _, rec in rows}
-        self._children: dict[int, list[int]] = defaultdict(list)
-        for oid, pid, _ in rows:
-            self._children[pid].append(oid)
+        cur.execute("SELECT object_id, parent_id, comp_name, record FROM comps")
+        self._comps = {oid: (parent, name, bytes(raw))
+                       for oid, parent, name, raw in cur.fetchall()}
+        self._names = dict(exporter._id_to_name)
+        self._bad_references = {}
+        self.diagnostics = {}
+        self._cache = {}
+        self._resolve_module_links()
 
-        # A "group id" is any nameless object_id that also appears as a parent_id
-        # AND has its own record.  These are both container anchors (index records)
-        # and content-group parents.
-        all_pids = set(self._oid_to_pid.values())
-        self._index_record_ids: set[int] = {
-            oid for oid in self._oid_to_rec if oid in all_pids
-        }
+    def _resolve_module_links(self):
+        """Validate typed module references against actual module object IDs.
 
-        # Comps object_id set — used to root the chain
-        cur.execute("SELECT object_id FROM comps")
-        self._comps_ids: set[int] = {int(r[0]) for r in cur.fetchall()}
-
-        # Cache: comps_id → ordered lines (populated lazily)
-        self._cache: dict[int, Optional[list[str]]] = {}
-
-    # ── Public ───────────────────────────────────────────────────────────────
-
-    def all_routines(self) -> list[tuple[str, int, list[str]]]:
-        """Return (name, comps_id, lines) for every ST routine in the ACD.
-
-        Routines are discovered entirely from the ACD's internal structure —
-        no L5X or tag-name hints required.  Routines whose ST content cannot
-        be decoded are silently omitted (they would have no index record).
+        A modern RxTag with CIP type 0x1069 is a module reference. Attribute
+        0x66 is its target Comps object ID (not text or a display-name suffix).
+        Both collections must belong to the same controller. Ordinary tags and
+        authored strings remain untouched, even if they contain '__Map:'.
         """
-        results = []
-        seen_comps: set[int] = set()
-
-        for desc_oid, desc_pid, _ in (
-            (oid, self._oid_to_pid[oid], None)
-            for oid in self._oid_to_rec
-            if self._oid_to_pid.get(oid) in self._comps_ids
-        ):
-            comps_id = desc_pid
-            if comps_id in seen_comps:
+        for oid, (parent, _name, raw) in self._comps.items():
+            collection = self._comps.get(parent)
+            if not collection or collection[1] != "RxTagCollection":
                 continue
-            lines = self._decode_from_desc(desc_oid)
-            if lines is not None:
-                seen_comps.add(comps_id)
-                name = self._name_lookup.get(comps_id, f"<{comps_id}>")
-                self._cache[comps_id] = lines
-                results.append((name, comps_id, lines))
+            try:
+                rx = RxGeneric.from_bytes(raw)
+            except Exception:
+                continue  # Names of ordinary records do not require Rx decoding.
+            if rx.cip_type != 0x6B or rx.main_record.cip_data_type != 0x1069:
+                continue
+            self._names.pop(oid, None)
+            try:
+                links = [bytes(a.value) for a in rx.extended_records
+                         if a.attribute_id == 0x66]
+                if len(links) != 1 or len(links[0]) != 4:
+                    raise ValueError("module reference has no unique four-byte 0x66 link")
+                target = self._comps.get(struct.unpack("<I", links[0])[0])
+                target_collection = self._comps.get(target[0]) if target else None
+                if (not target or not target_collection
+                        or target_collection[1] != "RxMapDeviceCollection"
+                        or target_collection[0] != collection[0]
+                        or RxGeneric.from_bytes(target[2]).cip_type != 0x69
+                        or not target[1]):
+                    raise ValueError("module reference target is not a module in this controller")
+                self._names[oid] = target[1]
+            except Exception as exc:
+                self._bad_references[oid] = str(exc)
 
-        return sorted(results, key=lambda t: t[0])
+    def _index(self, oid):
+        raw = self._records[oid]
+        # Source index record type 0x07D2, followed by ffffffff, u16 count,
+        # then count little-endian u32 line IDs. The upstream byte-22 walk
+        # incidentally skipped the count as an unknown ID; read it explicitly.
+        if (len(raw) < 26 or struct.unpack_from("<H", raw, 16)[0] != 0x07D2
+                or raw[20:24] != b"\xff" * 4):
+            return None
+        count = struct.unpack_from("<H", raw, 24)[0]
+        if len(raw) != 26 + 4 * count:
+            raise ValueError("ST source index length/count mismatch")
+        return [struct.unpack_from("<I", raw, pos)[0]
+                for pos in range(26, len(raw), 4)]
 
-    def decode(self, comps_id: int) -> Optional[list[str]]:
-        """Return the ordered ST source lines for one routine by its comps object_id.
+    def _decode_index(self, index, ids):
+        lines, issues, seen = [], [], set()
+        number = 0
+        for oid in ids:
+            # Repeated references to one source object are compiler artifacts;
+            # distinct records with identical source text remain distinct lines.
+            if oid in seen:
+                continue
+            seen.add(oid)
+            try:
+                if oid not in self._children.get(index, ()):
+                    raise ValueError("ST index references a missing or non-child line record")
+                if oid in self._duplicates:
+                    raise ValueError("duplicate ST line object ID")
+                text = _decode_line_text(self._records[oid])
 
-        Returns None if the routine has no decodable ST content.
+                def resolve(match):
+                    reference = int(match[1], 16)
+                    if reference not in self._names:
+                        issues.append(dict(line_number=number, record_id=oid,
+                                           reference_id=reference,
+                                           reason=self._bad_references.get(
+                                               reference, "unresolved ST object reference")))
+                        return match[0]
+                    return self._names[reference]
+
+                lines.append((number, _REFERENCE.sub(resolve, text)))
+            except (ValueError, UnicodeError) as exc:
+                issues.append(dict(line_number=number, record_id=oid, reason=str(exc)))
+            number += 1
+        return lines, issues
+
+    def decode_numbered(self, routine_id):
+        """Return numbered lines, or None for an unreadable routine.
+
+        diagnostics[routine_id] records omissions and unresolved references.
+        A blank source line is (number, ''), not a missing line. Missing lines
+        leave gaps in numbering, so subsequent source positions never shift.
         """
-        if comps_id in self._cache:
-            return self._cache[comps_id]
+        if routine_id in self._cache:
+            return self._cache[routine_id]
+        candidates, malformed = [], []
+        for desc in self._children.get(routine_id, ()):
+            for aspect in self._children.get(desc, ()):
+                for index in self._children.get(aspect, ()):
+                    try:
+                        ids = self._index(index)
+                    except ValueError as exc:
+                        malformed.append(dict(record_id=index, reason=str(exc)))
+                        continue
+                    if ids is not None:
+                        lines, issues = self._decode_index(index, ids)
+                        candidates.append((len(ids), lines, issues))
+        if not candidates:
+            lines = None
+            issues = malformed or [dict(reason="no supported ST source index")]
+        else:
+            # Empty sibling aspects are common. Prefer the aspect with the most
+            # source entries, including unreadable entries (not the most successes).
+            candidates.sort(key=lambda c: c[0], reverse=True)
+            _count, lines, issues = candidates[0]
+            issues = list(issues) + malformed
+            if any(c[0] == candidates[0][0] and c[1:] != candidates[0][1:]
+                   for c in candidates[1:]):
+                issues.append(dict(reason="ambiguous ST source aspects"))
+        self.diagnostics[routine_id] = issues
+        self._cache[routine_id] = lines
+        return lines
 
-        # Find the descriptor(s) whose parent_id == comps_id
-        for desc_oid in self._children.get(comps_id, []):
-            if desc_oid not in self._oid_to_rec:
-                continue
-            lines = self._decode_from_desc(desc_oid)
-            if lines is not None:
-                self._cache[comps_id] = lines
-                return lines
+    def decode(self, routine_id):
+        """Compatible upstream API: return ordered strings or None."""
+        lines = self.decode_numbered(routine_id)
+        return None if lines is None else [text for _number, text in lines]
 
-        self._cache[comps_id] = None
-        return None
-
-    # ── Private ──────────────────────────────────────────────────────────────
-
-    def _decode_from_desc(self, desc_oid: int) -> Optional[list[str]]:
-        """Walk aspects → index records under desc_oid; return the best decoded lines."""
-        best: Optional[list[str]] = None
-
-        for asp_oid in self._children.get(desc_oid, []):
-            for child_oid in self._children.get(asp_oid, []):
-                if child_oid not in self._index_record_ids:
-                    continue
-                idx_rec = self._oid_to_rec.get(child_oid, b"")
-                # Gather grandchildren (the actual line-text records)
-                line_recs = {
-                    gc: self._oid_to_rec[gc]
-                    for gc in self._children.get(child_oid, [])
-                    if gc in self._oid_to_rec
-                }
-                decoded = _decode_index_record(idx_rec, line_recs, self._name_lookup)
-                if decoded and (best is None or len(decoded) > len(best)):
-                    best = decoded
-
-        return best if best else None
+    def all_routines(self):
+        """Compatible discovery API, preserving diagnostics for unreadable data."""
+        out = []
+        for oid, (_parent, name, _raw) in self._comps.items():
+            if oid in self._children:
+                lines = self.decode(oid)
+                if lines is not None:
+                    out.append((name, oid, lines))
+        return sorted(out, key=lambda item: item[0])

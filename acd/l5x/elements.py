@@ -894,8 +894,21 @@ class Routine(L5xElement):
     rungs: List[str]
     _rung_ids: List[int] = field(default_factory=list)
     _rung_comments: Dict[int, str] = field(default_factory=dict)
+    _object_id: int = field(default=-1)
+    _st_lines: List[Tuple[int, str]] = field(default_factory=list)
 
     def to_xml(self) -> str:
+        if self.type == "ST":
+            lines = []
+            for number, text in self._st_lines:
+                if _XML_ILLEGAL_RE.search(text):
+                    raise ValueError("ST text contains an XML-illegal character")
+                # Preserve content, including blank lines, CRs and CDATA endings.
+                text = text.replace("]]>", "]]]]><![CDATA[>")
+                text = text.replace("\r", "]]>&#xD;<![CDATA[")
+                lines.append(f'<Line Number="{number}"><![CDATA[{text}]]></Line>')
+            return (f'<Routine Name="{_escape_xml_attr(self.name)}" Type="ST">'
+                    f'<STContent>{"".join(lines)}</STContent></Routine>')
         rll_content = ""
         if self.type == "RLL" and self.rungs:
             rung_xmls = []
@@ -909,10 +922,10 @@ class Routine(L5xElement):
                     comment_text = comment_text.replace("]]>", "]]]]><![CDATA[>")
                     comment_xml = f'<Comment><![CDATA[{comment_text}]]></Comment>'
                 rung_xmls.append(
-                    f'<Rung Number="{i}" Type="N">'
+                    f'<Rung Number="{i}" Type="N">\n'
                     f'{comment_xml}'
-                    f'<Text><![CDATA[{text}]]></Text>'
-                    f'</Rung>'
+                    f'<Text><![CDATA[{text}]]></Text>\n'
+                    f'</Rung>\n'
                 )
             if rung_xmls:
                 rll_content = f'<RLLContent>{"".join(rung_xmls)}</RLLContent>'
@@ -1142,10 +1155,31 @@ class RSLogix5000Content(L5xElement):
     contains_context: str
     export_date: str
     export_options: str
+    _conversion_notes: List[str] = field(default_factory=list)
+    _st_diagnostics: List[dict] = field(default_factory=list)
 
     def __post_init__(self):
         super().__post_init__()
         self._export_name = "RSLogix5000Content"
+
+    def to_xml(self) -> str:
+        # Minimal PR67 dependency: ST issues are also visible in the saved L5X.
+        # No changes to unrelated builder fallback behavior or constructor args.
+        notes = []
+        for note in self.conversion_notes:
+            text = _XML_ILLEGAL_RE.sub("", " ".join(note.splitlines()))
+            notes.append(re.sub(r"-{2,}", "-", text))
+        prefix = ("<!-- acd-tools conversion notes:\n" + "\n".join(notes)
+                  + "\n-->\n") if notes else ""
+        return prefix + super().to_xml()
+
+    @property
+    def conversion_notes(self):
+        return self._conversion_notes
+
+    @conversion_notes.setter
+    def conversion_notes(self, notes):
+        self._conversion_notes = notes
 
 
 def radix_enum(i: int) -> str:
@@ -2457,7 +2491,7 @@ class RoutineBuilder(L5xElementBuilder):
         if routine_type == "TypeLess" and rungs:
             routine_type = "RLL"
 
-        return Routine(name, name, routine_type, rungs, rung_ids, rung_comments)
+        return Routine(name, name, routine_type, rungs, rung_ids, rung_comments, _object_id=self._object_id)
 
 
 def _parse_fffeff(data: bytes, offset: int):

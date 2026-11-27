@@ -123,7 +123,7 @@ class ExportL5x:
         self._cur.executemany("INSERT INTO comps VALUES (?,?,?,?,?,?)", comps_by_id.values())
         self._db.commit()
 
-        # Build name lookup for SbRegion tag reference resolution (object_id â†’ comp_name).
+        # Build name lookup for SbRegion tag reference resolution (object_id → comp_name).
         # Store on self for use during write-back (patch_sbregion_dat needs id_to_name).
         name_lookup = {oid: t[2] for oid, t in comps_by_id.items()}
         self._id_to_name: Dict[int, str] = name_lookup
@@ -196,7 +196,43 @@ class ExportL5x:
             attach_values(self._controller, self._cur, layouts, self._layout_problems)
             from acd.l5x.safety_map import materialize as materialize_map
             materialize_map(self._controller, self._cur)
+            self._populate_st()
         return self._controller
+
+    def _populate_st(self):
+        self._st_diagnostics = []
+        self._st_notes = []
+        owners = [("Program", p) for p in self._controller.programs]
+        owners += [("AOI", a) for a in self._controller.aois]
+        routines = [(kind, owner.name, routine)
+                    for kind, owner in owners for routine in owner.routines
+                    if routine.type == "ST"]
+        if not routines:
+            return
+        decoder, initialization_error = None, None
+        try:
+            decoder = self.st_decoder()
+        except Exception as exc:
+            initialization_error = str(exc)
+        for kind, owner, routine in routines:
+            try:
+                if decoder is None:
+                    raise ValueError(initialization_error)
+                lines = decoder.decode_numbered(routine._object_id)
+                routine._st_lines = lines if lines is not None else []
+                issues = decoder.diagnostics.get(routine._object_id, [])
+            except Exception as exc:
+                issues = [dict(reason="ST routine could not be decoded: " + str(exc))]
+            for issue in issues:
+                record = dict(scope=kind, owner=owner, routine=routine.name,
+                              routine_id=routine._object_id, **issue)
+                self._st_diagnostics.append(record)
+                line = issue.get("line_number")
+                position = f" line {line}" if line is not None else ""
+                note = (f"Incomplete Structured Text {kind} {owner}/{routine.name}"
+                        f"{position}: {issue['reason']}")
+                self._st_notes.append(note)
+                log.warning(note)
 
     def st_decoder(self) -> "STDecoder": # noqa
         """Return an STDecoder for this ACD file.
@@ -225,6 +261,8 @@ class ExportL5x:
                 Path(os.path.join(self._temp_dir, "QuickInfo.XML"))
             ).build()
             self._project.controller = self.controller
+            self._project.conversion_notes = list(self._st_notes)
+            self._project._st_diagnostics = list(self._st_diagnostics)
             self._project._raw_files = self._raw_files
             self._project._file_order = self._file_order
             self._project._footer_unknown = self._footer_unknown

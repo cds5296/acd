@@ -74,7 +74,7 @@ def assess(project):
         add('aoi-configuration', aoi.name, 'AOI class, postscan and enable-in-false settings are not decoded')
     for owner in list(controller.programs) + list(controller.aois):
         for routine in owner.routines:
-            if routine.type != 'RLL':
+            if routine.type not in ('RLL', 'ST'):
                 add('routine-body', owner.name + '/' + routine.name, 'Unsupported executable routine type ' + routine.type)
             for text in routine.rungs:
                 if re.search(r'@[0-9A-Fa-f]+@', text or ''):
