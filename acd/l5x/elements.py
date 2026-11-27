@@ -762,6 +762,9 @@ class Module(L5xElement):
         if self._comm_method is not None:
             conn_parts: List[str] = []
             for (conn_name, rpi_str, conn_type) in self._connections:
+                # The current modern builder supplies a sentinel, not a source RPI.
+                if rpi_str == '0.0':
+                    continue
                 safe_name = _escape_xml_attr(conn_name)
                 # Derive InputTag / OutputTag stubs based on connection type.
                 if conn_type == "Output":
@@ -947,6 +950,7 @@ class AOI(L5xElement):
     routines: List[Routine]
     _description: Union[str, None] = field(default=None)
     _revision_note: str = field(default="")
+    _unreadable_routines: list = field(default_factory=list)
 
     def __post_init__(self):
         super().__post_init__()
@@ -1075,8 +1079,8 @@ class Controller(L5xElement):
         parts = [
             open_tag,
             getattr(self, "_description_xml", "<Description></Description>"),
-            f'<RedundancyInfo Enabled="{redundancy_enabled_str}" KeepTestEditsOnSwitchOver="false"/>',
-            '<Security Code="0" ChangesToDetect="16#ffff_ffff_ffff_ffff"/>',
+            f'<RedundancyInfo Enabled="{redundancy_enabled_str}"/>',
+            '<Security/>',
             '<SafetyInfo/>',
             self._section_xml("data_types", "DataTypes"),
             self._section_xml("modules", "Modules"),
@@ -1084,11 +1088,11 @@ class Controller(L5xElement):
             self._section_xml("tags", "Tags"),
             self._section_xml("programs", "Programs"),
             self._section_xml("tasks", "Tasks"),
-            '<CST MasterID="0"/>',
-            '<WallClockTime LocalTimeAdjustment="0" TimeZone="0"/>',
+            '<CST/>',
+            '<WallClockTime/>',
             '<Trends/>',
             '<DataLogs/>',
-            '<TimeSynchronize Priority1="128" Priority2="128" PTPEnable="true"/>',
+            '<TimeSynchronize/>',
             self._ethernet_ports_xml(),
             '</Controller>',
         ]
@@ -2577,6 +2581,7 @@ class AoiBuilder(L5xElementBuilder):
         parameters: List[Parameter] = []
         local_tags: List[LocalTag] = []
         routines: List[Routine] = []
+        unreadable_routines = []
 
         # --- Extract Parameters and LocalTags from RxTagCollection ---
         self._cur.execute(
@@ -2631,13 +2636,14 @@ class AoiBuilder(L5xElementBuilder):
         if routine_coll_row:
             routine_coll_oid = routine_coll_row[0]
             self._cur.execute(
-                "SELECT object_id FROM comps WHERE parent_id=" + str(routine_coll_oid)
+                "SELECT object_id, comp_name FROM comps WHERE parent_id=?", (routine_coll_oid,)
             )
-            for (child_oid,) in self._cur.fetchall():
+            for child_oid, routine_name in self._cur.fetchall():
                 try:
                     routines.append(RoutineBuilder(self._cur, child_oid, self._rung_keys).build())
-                except Exception:
-                    pass
+                except Exception as exc:
+                    unreadable_routines.append(dict(code='unreadable-aoi-routine', object_id=child_oid,
+                                                    owner=f'{name}/{routine_name}', reason=str(exc) or type(exc).__name__))
 
         # --- Description + RevisionNote ---
         aoi_description: Union[str, None] = None
@@ -2673,6 +2679,7 @@ class AoiBuilder(L5xElementBuilder):
             parameters, local_tags, routines,
             aoi_description,
             revision_note,
+            unreadable_routines,
         )
 
 

@@ -223,6 +223,9 @@ class ExportL5x:
             self._project._file_order = self._file_order
             self._project._footer_unknown = self._footer_unknown
             self._project._id_to_name = self._id_to_name
+            self._project._reference_diagnostics = list(getattr(self, "_module_reference_issues", []))
+            from acd.l5x.completeness import source_issues
+            self._project._reference_diagnostics.extend(source_issues(self._cur, self._project.controller))
             # The sqlite connection (and its WAL/journal files) is only needed
             # while the object tree above is being built. Left open, it holds
             # an OS-level lock on acd.db inside _temp_dir for as long as this
@@ -540,22 +543,22 @@ if __name__ == "__main__":
         help="External catalog JSON path (merges over built-in CATALOG_NUMBERS)",
     )
 
+    parser.add_argument('--allow-incomplete', action='store_true',
+                        help='Write a diagnostic preview despite unresolved content')
+    parser.add_argument('--rx-attribute-layout', choices=('compat', 'complete-counted'),
+                        default='compat', help='Explicit input contract; never autodetected')
     args = parser.parse_args()
-    # Build the in-memory project and write the L5X XML. (Previously this
-    # passed the output path as ExportL5x's SECOND POSITIONAL arg, which landed
-    # in the _temp_dir field and wrote nothing -- the CLI built the SQLite DB but
-    # never emitted the .L5X. This mirrors ConvertAcdToL5x.extract() in
-    # acd.api: import the project, serialise via to_xml(), write the file.)
-    export = ExportL5x(args.input[0])
-    # Thread external catalog through so out-of-table CPUs resolve to real
-    # part numbers (A3 fix). None -> built-in only.
-    if args.catalog:
-        export._catalog_table = load_external_catalog(args.catalog)
-    project = export.project
-    raw_xml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n' + project.to_xml()
-    out_dir = os.path.dirname(args.output[0])
-    if out_dir and not os.path.exists(out_dir):
-        os.makedirs(out_dir, exist_ok=True)
-    with open(args.output[0], "w", encoding="utf-8") as f:
-        f.write(raw_xml)
-    log.info("Wrote L5X: " + args.output[0])
+    from acd.api import ConvertAcdToL5x
+    from acd.l5x.completeness import IncompleteExportError
+    import sys
+    try:
+        result = ConvertAcdToL5x(
+            args.input[0], args.output[0], catalog_file=args.catalog,
+            rx_attribute_layout=args.rx_attribute_layout, allow_incomplete=args.allow_incomplete,
+        ).extract()
+    except IncompleteExportError as exc:
+        log.error(str(exc))
+        sys.exit(2)
+    if not result.complete:
+        log.error('Wrote an incomplete preview; see diagnostics sidecar')
+        sys.exit(2)
