@@ -1071,7 +1071,7 @@ class Controller(L5xElement):
             getattr(self, "_description_xml", "<Description></Description>"),
             f'<RedundancyInfo Enabled="{redundancy_enabled_str}"/>',
             '<Security/>',
-            '<SafetyInfo/>',
+            getattr(self, '_safety_map_xml', '<SafetyInfo/>'),
             self._section_xml("data_types", "DataTypes"),
             self._section_xml("modules", "Modules"),
             self._section_xml("aois", "AddOnInstructionDefinitions"),  # AFTER Modules

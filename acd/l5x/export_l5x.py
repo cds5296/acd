@@ -194,6 +194,8 @@ class ExportL5x:
             self._layout_problems = []
             layouts = load_layouts(Path(self._temp_dir) / 'TagInfo.XML', self._layout_problems)
             attach_values(self._controller, self._cur, layouts, self._layout_problems)
+            from acd.l5x.safety_map import materialize as materialize_map
+            materialize_map(self._controller, self._cur)
         return self._controller
 
     def st_decoder(self) -> "STDecoder": # noqa
