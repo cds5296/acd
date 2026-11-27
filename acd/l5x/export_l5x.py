@@ -190,6 +190,10 @@ class ExportL5x:
             from acd.l5x.annotations import materialize as materialize_annotations
             materialize(self._controller, self._cur)
             materialize_annotations(self._controller, self._cur)
+            from acd.l5x.values import attach_values, load_layouts
+            self._layout_problems = []
+            layouts = load_layouts(Path(self._temp_dir) / 'TagInfo.XML', self._layout_problems)
+            attach_values(self._controller, self._cur, layouts, self._layout_problems)
         return self._controller
 
     def st_decoder(self) -> "STDecoder": # noqa
@@ -224,6 +228,7 @@ class ExportL5x:
             self._project._footer_unknown = self._footer_unknown
             self._project._id_to_name = self._id_to_name
             self._project._reference_diagnostics = list(getattr(self, "_module_reference_issues", []))
+            self._project._reference_diagnostics.extend(self._layout_problems)
             from acd.l5x.completeness import source_issues
             self._project._reference_diagnostics.extend(source_issues(self._cur, self._project.controller))
             # The sqlite connection (and its WAL/journal files) is only needed
