@@ -978,6 +978,7 @@ class Program(L5xElement):
     use_as_folder: str
     tags: List[Tag]        # Tags section before Routines (matches L5X export order)
     routines: List[Routine]
+    cls: Union[str, None] = None
 
 
 @dataclass
@@ -1010,6 +1011,7 @@ class Task(L5xElement):
     inhibit_task: str
     event_info: Union[EventInfo, None]  # None for non-EVENT tasks
     scheduled_programs: List[ScheduledProgram]
+    cls: Union[str, None] = None
 
 
 @dataclass
@@ -2780,8 +2782,11 @@ class ProgramBuilder(L5xElementBuilder):
         # for all programs in a redundant controller project.
         sync_redundancy = "true" if self._redundancy_enabled else None
 
-        return Program(name, name, "false", main_routine_name, fault_routine_name,
+        program = Program(name, name, "false", main_routine_name, fault_routine_name,
                        disabled, sync_redundancy, "false", tags, routines)
+        from acd.l5x.execution_class import source_class
+        program.cls = source_class(getattr(r, 'record_format_version', None), ext01, 'program')
+        return program
 
 
 _TASK_TYPE_MAP = {1: "EVENT", 2: "PERIODIC", 4: "CONTINUOUS"}
@@ -2866,7 +2871,7 @@ class TaskBuilder(L5xElementBuilder):
         if task_type == "EVENT":
             event_info = EventInfo("EventInfo", "EVENT Instruction Only", "false")
 
-        return Task(
+        task = Task(
             name,
             name,
             task_type,
@@ -2878,6 +2883,11 @@ class TaskBuilder(L5xElementBuilder):
             event_info,
             scheduled_programs,
         )
+        from acd.l5x.execution_class import source_class
+        parsed = RxGeneric.from_bytes(record)
+        metadata = next((bytes(a.value) for a in parsed.extended_records if a.attribute_id == 1), b'')
+        task.cls = source_class(getattr(parsed, 'record_format_version', None), metadata, 'task')
+        return task
 
 
 @dataclass
