@@ -71,10 +71,17 @@ def test_competing_texts_never_pick_a_winner(routine):
     assert routine({102: 12}, rows)._rung_comments == {}
 
 
-@pytest.mark.parametrize('legacy,expected', [(True, {0: 'First', 1: 'Second'}), (False, {})])
-def test_bounded_legacy_indices(routine, legacy, expected):
-    rows = [(oid, text, 0, 0, 0, 1) for oid, text in [(1, 'First'), (2, 'Second'), (9, 'Orphan')]]
-    assert routine({}, rows, legacy=legacy)._rung_comments == expected
+@pytest.mark.parametrize('legacy', [True, False])
+def test_distinct_object_ids_do_not_establish_rung_positions(routine, legacy):
+    rows = [(oid, text, key, 0, 0, 1) for oid, text, key in
+            [(1, 'Orphan', 7), (2, 'First', 10), (9, 'Second', 12)]]
+    assert routine({101: 10, 102: 12}, rows, legacy=legacy)._rung_comments == {0: 'First', 1: 'Second'}
+
+
+@pytest.mark.parametrize('legacy', [True, False])
+def test_missing_source_keys_never_route_by_object_id(routine, legacy):
+    rows = [(1, 'Orphan', 7, 0, 0, 1), (2, 'Other', 8, 0, 0, 1)]
+    assert routine({}, rows, legacy=legacy)._rung_comments == {}
 
 
 def test_conflicting_ast_records_stay_unresolved(monkeypatch):

@@ -2414,11 +2414,11 @@ class RoutineBuilder(L5xElementBuilder):
         # and the high half of rung_content identifies the rung in the AST or a scoped region link.
         routine_key = struct.unpack_from("<H", r.record_buffer, 2)[0]
         self._cur.execute(
-            "SELECT object_id, record_string, rung_content FROM comments "
+            "SELECT record_string, rung_content FROM comments "
             "WHERE parent=? AND member_ref=? AND record_type IN (1, 2) AND rung_content!=0",
             ((r.comment_id << 16) | r.cip_type, (routine_key << 16) | 0x6D),
         )
-        comments = [(oid, text, content) for oid, text, content in self._cur if text]
+        comments = [(text, content) for text, content in self._cur if text]
         keys = self._rung_keys or {}
         indices = {}
         for index, rung_id in enumerate(rung_ids):
@@ -2427,14 +2427,10 @@ class RoutineBuilder(L5xElementBuilder):
                 # A repeated key within this routine has no unique destination.
                 indices[key] = None if key in indices else index
 
-        # Only retain the older one-based convention on indexed legacy records
-        # with multiple distinct indices and no source key for this routine.
-        indexed = (isinstance(r, LegacyRxGeneric) and not any(oid in keys for oid in rung_ids)
-                   and len({oid for oid, _, _ in comments}) > 1)
         candidates = {}
         unresolved = 0
-        for oid, text, content in comments:
-            index = oid - 1 if indexed else indices.get(content >> 16)
+        for text, content in comments:
+            index = indices.get(content >> 16)
             if index is None or not 0 <= index < len(rungs):
                 unresolved += 1
                 continue
