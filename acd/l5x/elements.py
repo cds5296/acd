@@ -599,21 +599,8 @@ class Tag(L5xElement):
             desc_xml = "<Description>\n" + cdata(self._sanitize_xml_text(descriptions.pop())) + "\n</Description>"
         desc_xml += comments_xml(self)
 
-        # --- Data child element(s) ---
-        # Scalar primitives get Format="L5K" only.
-        # Scalar STRING gets Format="L5K" (the L5K encoder handles it separately; we emit
-        # nothing here — Decorated is not used for scalar STRING tags).
-        # Everything else (UDTs, arrays, TIMER, COUNTER, etc.) gets Format="Decorated".
-        dt_base = self.data_type.split("[")[0].upper() if self.data_type else ""
-        from acd.l5x.numeric_values import FORMATS
-        numeric = dt_base in FORMATS
-        data_xml = getattr(self, '_source_value_xml', '') if numeric else ''
-
-        if not numeric and dt_base not in _SKIP_DECORATED and dt_base != "STRING":
-            # Generate Decorated data for non-primitive / array types
-            decorated = _generate_decorated(dt_base, self.dimensions, self._data_types_map)
-            if decorated:
-                data_xml = decorated
+        # Values are decoded while the source database is open.
+        data_xml = getattr(self, '_value_xml', '') or getattr(self, '_source_value_xml', '')
 
         if not desc_xml and not data_xml:
             return base
