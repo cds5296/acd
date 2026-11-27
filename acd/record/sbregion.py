@@ -43,10 +43,17 @@ class SbRegionRecord:
         return sb_rec
 
     @staticmethod
-    def parse(dat_record: DatRecord, name_lookup: Dict[int, str]) -> Optional[tuple]:
+    def parse(dat_record: DatRecord, name_lookup: Dict[int, str], ast_rung_keys=None) -> Optional[tuple]:
         if dat_record.identifier != 64250:
             return None
         r = FafaSbregions.from_bytes(dat_record.record.record_buffer)
+        if r.header.language_type == "REGION AST" and ast_rung_keys is not None:
+            oid = r.header.identifier
+            data = r.record_buffer
+            key = struct.unpack_from("<H", data, len(data) - 18)[0] if len(data) >= 18 else None
+            if oid in ast_rung_keys and ast_rung_keys[oid] != key:
+                key = None
+            ast_rung_keys[oid] = key
         if r.header.language_type not in ("Rung NT", "REGION NT"):
             return None
         text = r.record_buffer.decode("utf-16-le").rstrip("\x00")

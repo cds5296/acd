@@ -137,7 +137,8 @@ class ExportL5x:
             "Getting records from ACD SbRegion file and storing in sqllite database"
         )
         sb_region_db = DbExtract(os.path.join(self._temp_dir, "SbRegion.Dat")).read()
-        rung_tuples = [t for record in sb_region_db.records.record if (t := SbRegionRecord.parse(record, name_lookup)) is not None]
+        self._ast_rung_keys = {}
+        rung_tuples = [t for record in sb_region_db.records.record if (t := SbRegionRecord.parse(record, name_lookup, self._ast_rung_keys)) is not None]
         self._cur.executemany("INSERT INTO rungs VALUES (?,?,?)", rung_tuples)
         self._db.commit()
 
@@ -180,7 +181,7 @@ class ExportL5x:
     def controller(self):
         if self._controller is None:
             self._controller = ControllerBuilder(
-                self._cur, _catalog_table=self._catalog_table
+                self._cur, _catalog_table=self._catalog_table, _ast_rung_keys=self._ast_rung_keys
             ).build()
         return self._controller
 
