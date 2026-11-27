@@ -42,12 +42,17 @@ CATALOG_NUMBERS: Dict[Tuple[int, int, int], str] = {
     (1, 14, 166): "1756-L83E",
     (1, 14, 167): "1756-L84E",
     (1, 14, 168): "1756-L85E",
+    # Public PR 61 candidates independently checked against native exports.
+    (1, 14, 196): "5069-L306ER",
+    (1, 14, 240): "5069-L350ERS2",
     (1, 109, 6): "1794-IP4/B",
     (1, 115, 323): "5094-IF8IH/A",
     (1, 115, 324): "5094-OF8IH/A",
     (1, 123, 1168): "PowerFlex 753-NET-E",
     (1, 142, 1168): "PowerFlex 753-ENETR",
     (1, 143, 2192): "PowerFlex 755-EENET",
+    # Public PR 64 candidate independently checked against a native export.
+    (7, 27, 156): "EX260-SEN1/A",
     (1182, 0, 4162): "Promag_53/A",
     (1182, 0, 4177): "Promass_83/A",
     (1182, 43, 4154): "Promag_100",
