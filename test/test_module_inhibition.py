@@ -8,9 +8,9 @@ from acd.l5x.elements import ModuleBuilder
 @pytest.mark.parametrize('flags,expected', [(0, 'false'), (4, 'true'), (0x80, 'false'), (0x84, 'true')])
 def test_module_inhibition_comes_from_configuration_word(monkeypatch, flags, expected):
     connection = sqlite3.connect(':memory:')
-    connection.execute('CREATE TABLE comps(comp_name text, object_id int, parent_id int, seq_number int, record blob)')
+    connection.execute('CREATE TABLE comps(comp_name text, object_id int, parent_id int, seq_number int, record blob, record_type int)')
     connection.execute('CREATE TABLE comments(parent int, member_ref int, record_string text)')
-    connection.execute("INSERT INTO comps VALUES ('CPU', 100, 1, 1, X'00')")
+    connection.execute("INSERT INTO comps VALUES ('CPU', 100, 1, 1, X'00', 256)")
     data = bytearray(946)
     data[20] = flags
     struct.pack_into('<I', data, 22, 9)
