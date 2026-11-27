@@ -606,10 +606,11 @@ class Tag(L5xElement):
         # nothing here — Decorated is not used for scalar STRING tags).
         # Everything else (UDTs, arrays, TIMER, COUNTER, etc.) gets Format="Decorated".
         dt_base = self.data_type.split("[")[0].upper() if self.data_type else ""
-        l5k_zero = _PRIMITIVE_L5K_ZERO.get(dt_base) if not self.dimensions else None
-        data_xml = f'<Data Format="L5K">\n{l5k_zero}\n</Data>' if l5k_zero is not None else ""
+        from acd.l5x.numeric_values import FORMATS
+        numeric = dt_base in FORMATS
+        data_xml = getattr(self, '_source_value_xml', '') if numeric else ''
 
-        if not data_xml and dt_base not in _SKIP_DECORATED and dt_base != "STRING":
+        if not numeric and dt_base not in _SKIP_DECORATED and dt_base != "STRING":
             # Generate Decorated data for non-primitive / array types
             decorated = _generate_decorated(dt_base, self.dimensions, self._data_types_map)
             if decorated:
