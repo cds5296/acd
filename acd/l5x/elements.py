@@ -914,7 +914,8 @@ class Routine(L5xElement):
                     continue
                 comment_xml = ""
                 if i in self._rung_comments:
-                    comment_text = self._rung_comments[i]
+                    comment_text = self._rung_comments[i].replace("\r\n", "\n")
+                    comment_text = comment_text.replace("]]>", "]]]]><![CDATA[>")
                     comment_xml = f'<Comment><![CDATA[{comment_text}]]></Comment>'
                 rung_xmls.append(
                     f'<Rung Number="{i}" Type="N">'

@@ -91,3 +91,13 @@ def test_conflicting_ast_records_stay_unresolved(monkeypatch):
 def test_aoi_forwards_rung_identities(routine):
     result = routine({101: 10, 102: 12}, [(1, 'AOI second', 12, 0, 0, 1)], aoi=True)
     assert result._rung_comments == {1: 'AOI second'}
+
+
+def test_multiline_comment_survives_windows_text_output(routine, tmp_path):
+    import xml.etree.ElementTree as ET
+    source = ' leading\r\n\r\nline ]]> end\r\n '
+    result = routine({102: 12}, [(1, source, 12, 0, 0, 1)])
+    path = tmp_path / 'routine.xml'
+    with path.open('w', encoding='utf-8', newline='\r\n') as out:
+        out.write(result.to_xml())
+    assert ET.parse(path).findtext('RLLContent/Rung[@Number="1"]/Comment') == ' leading\n\nline ]]> end\n '
