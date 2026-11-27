@@ -712,7 +712,7 @@ class Module(L5xElement):
     minor: int
     parent_module: str
     parent_mod_port_id: int
-    inhibited: str
+    inhibited: Union[str, None]
     major_fault: str
     # Private fields (not serialised as XML attributes)
     _ekey_state: str = field(default="CompatibleModule")
@@ -745,8 +745,8 @@ class Module(L5xElement):
             f'Minor="{self.minor}" '
             f'ParentModule="{self.parent_module}" '
             f'ParentModPortId="{self.parent_mod_port_id}" '
-            f'Inhibited="{self.inhibited}" '
-            f'MajorFault="{self.major_fault}"'
+            + (f'Inhibited="{self.inhibited}" ' if self.inhibited is not None else '')
+            + f'MajorFault="{self.major_fault}"'
         )
 
         # Optional <Description>
@@ -1706,6 +1706,7 @@ class ModuleBuilder(L5xElementBuilder):
                 conn_type = "Input"
             connections.append((conn_name, "0.0", conn_type))
 
+        from acd.l5x.module_inhibition import inhibition
         return Module(
             name,           # L5xElement._name (private)
             name,           # Module.name
@@ -1719,7 +1720,7 @@ class ModuleBuilder(L5xElementBuilder):
             minor,
             parent_name,
             parent_port,
-            "true" if e1[0x14] & 0x04 else "false",
+            inhibition(r, e1),
             major_fault,
             _ekey_state=ekey_state,
             _slot=slot,

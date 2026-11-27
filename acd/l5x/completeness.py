@@ -78,6 +78,8 @@ def assess(project):
                 if re.search(r'@[0-9A-Fa-f]+@', text or ''):
                     add('ladder-reference', owner.name + '/' + routine.name, 'Unresolved object reference')
     for module in controller.modules:
+        if getattr(module, 'inhibited', False) is None:
+            add('module-inhibition', module.name, 'Unsupported module inhibition layout')
         if hasattr(module, '_build_ports_xml'):
             module._build_ports_xml()  # Discover missing configured sizes before writing.
         if module.catalog_number.startswith('CIP-') or not module.catalog_number:
