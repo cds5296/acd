@@ -32,6 +32,11 @@ class RxGeneric(KaitaiStruct):
             self._raw_main_record = self._io.read_bytes(60)
             _io__raw_main_record = KaitaiStream(BytesIO(self._raw_main_record))
             self.main_record = RxGeneric.RxTag(_io__raw_main_record, self, self._root)
+        elif _on == 108:
+            pass
+            self._raw_main_record = self._io.read_bytes(60)
+            _io__raw_main_record = KaitaiStream(BytesIO(self._raw_main_record))
+            self.main_record = RxGeneric.RxTag(_io__raw_main_record, self, self._root)
         else:
             pass
             self._raw_main_record = self._io.read_bytes(60)
@@ -52,6 +57,9 @@ class RxGeneric(KaitaiStruct):
             pass
             self.main_record._fetch_instances()
         elif _on == 107:
+            pass
+            self.main_record._fetch_instances()
+        elif _on == 108:
             pass
             self.main_record._fetch_instances()
         else:
