@@ -4,6 +4,8 @@ import math
 import re
 import struct
 
+from loguru import logger
+
 from acd.record.rx import RxGeneric
 
 
@@ -14,8 +16,8 @@ FORMATS = dict(BOOL='B', SINT='b', INT='h', DINT='i', LINT='q',
 def dimensions(text):
     if text is None or text == '':
         return ()
-    parts = re.split(r'[, ]+', str(text).strip())
-    if len(parts) > 3 or any(not p.isdigit() or int(p) <= 0 for p in parts):
+    parts = re.split(r' *, *| +', str(text).strip())
+    if len(parts) > 3 or any(not re.fullmatch(r'[0-9]+', p) or int(p) <= 0 for p in parts):
         raise ValueError('Invalid array dimensions')
     return tuple(map(int, parts))
 
@@ -30,6 +32,8 @@ def number_text(value, kind):
 
 def numeric_xml(kind, dimension_text, raw):
     shape = dimensions(dimension_text)
+    if kind == 'BOOL' and shape:
+        raise ValueError('Packed BOOL arrays require a separate storage decoder')
     count = math.prod(shape) if shape else 1
     width = struct.calcsize('<' + FORMATS[kind])
     if raw is None or len(raw) != count * width:
@@ -79,3 +83,6 @@ def materialize(controller, cur):
             except (ValueError, EOFError, struct.error) as exc:
                 tag._source_value_xml = ''
                 tag._value_problem = str(exc)
+                if not tag._l5x_exclude:
+                    logger.warning("Omitting numeric data for {} / {} (instance {}): {}",
+                                   owner.name, tag.name, tag._data_table_instance, exc)
