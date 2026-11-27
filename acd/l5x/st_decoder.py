@@ -12,7 +12,8 @@ import re
 import struct
 from collections import defaultdict
 
-from acd.record.rx import RxGeneric
+from acd.record.attribute_bounds import AmbiguousModuleLink
+from acd.record.rx import RxGeneric, read_reference_record
 
 
 _REFERENCE = re.compile(r"@([0-9a-fA-F]{1,8})@")
@@ -73,7 +74,11 @@ class STDecoder:
             if not collection or collection[1] != "RxTagCollection":
                 continue
             try:
-                rx = RxGeneric.from_bytes(raw)
+                rx = read_reference_record(raw)
+            except AmbiguousModuleLink as exc:
+                self._names.pop(oid, None)
+                self._bad_references[oid] = str(exc)
+                continue
             except Exception:
                 continue  # Names of ordinary records do not require Rx decoding.
             if rx.cip_type != 0x6B or rx.main_record.cip_data_type != 0x1069:

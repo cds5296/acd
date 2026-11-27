@@ -125,3 +125,24 @@ class RxGeneric:
         ):
             return LegacyRxGeneric(raw)
         return GeneratedRxGeneric.from_bytes(raw)
+
+
+def read_reference_record(raw):
+    """Read Rx metadata without treating an ambiguous module link as a name."""
+    from acd.record.attribute_bounds import AmbiguousModuleLink
+
+    parsed = RxGeneric.from_bytes(raw)
+    if parsed.cip_type != 0x6B or parsed.main_record.cip_data_type != 0x1069:
+        return parsed
+    attributes = parsed.extended_records
+    links = sum(attr.attribute_id == 0x66 for attr in attributes)
+    if links > 1:
+        raise AmbiguousModuleLink()
+    if (links and not isinstance(parsed, LegacyRxGeneric)
+            and len(attributes) == parsed.count_record - 1):
+        # Compat omits the final value. Its key alone can disqualify an earlier
+        # link. Walk parsed lengths and never read a target from the tail.
+        last = 82 + sum(8 + attr.len_value for attr in attributes)
+        if raw[last:last + 4] == struct.pack("<I", 0x66):
+            raise AmbiguousModuleLink()
+    return parsed

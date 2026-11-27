@@ -1,6 +1,7 @@
 """Typed module-reference names shared by source languages; no prefix rules."""
 import struct
-from acd.record.rx import RxGeneric
+from acd.record.attribute_bounds import AmbiguousModuleLink
+from acd.record.rx import RxGeneric, read_reference_record
 
 
 def resolve(cur, names):
@@ -12,7 +13,11 @@ def resolve(cur, names):
         if not collection or collection[1] != 'RxTagCollection':
             continue
         try:
-            parsed = RxGeneric.from_bytes(raw)
+            parsed = read_reference_record(raw)
+        except AmbiguousModuleLink as exc:
+            names.pop(oid, None)
+            issues[oid] = str(exc)
+            continue
         except (ValueError,EOFError,struct.error):
             continue
         if parsed.cip_type != 0x6b or parsed.main_record.cip_data_type != 0x1069:

@@ -72,13 +72,23 @@ def assess(project):
         issues.extend(getattr(aoi, '_unreadable_routines', []))
         issues.extend(getattr(aoi, '_declaration_issues', []))
         add('aoi-configuration', aoi.name, 'AOI class, postscan and enable-in-false settings are not decoded')
-    for owner in list(controller.programs) + list(controller.aois):
+    for entry in getattr(project, '_st_diagnostics', []):
+        if 'reference_id' in entry:
+            issues.append(dict(entry, code='st-reference'))
+    reference_errors = {entry['object_id']: entry['reason']
+                        for entry in getattr(project, '_reference_diagnostics', [])
+                        if isinstance(entry, dict) and entry.get('code') == 'module-reference'}
+    owners = [('Program', p) for p in controller.programs] + [('AOI', a) for a in controller.aois]
+    for scope, owner in owners:
         for routine in owner.routines:
             if routine.type not in ('RLL', 'ST'):
                 add('routine-body', owner.name + '/' + routine.name, 'Unsupported executable routine type ' + routine.type)
-            for text in routine.rungs:
-                if re.search(r'@[0-9A-Fa-f]+@', text or ''):
-                    add('ladder-reference', owner.name + '/' + routine.name, 'Unresolved object reference')
+            for number, text in enumerate(routine.rungs):
+                for token in re.findall(r'@([0-9A-Fa-f]+)@', text or ''):
+                    oid = int(token, 16)
+                    issues.append(dict(code='ladder-reference', scope=scope, owner=owner.name,
+                                       routine=routine.name, rung_number=number, reference_id=oid,
+                                       reason=reference_errors.get(oid, 'Unresolved object reference')))
     for module in controller.modules:
         if getattr(module, 'inhibited', False) is None:
             add('module-inhibition', module.name, 'Unsupported module inhibition layout')
