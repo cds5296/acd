@@ -1719,7 +1719,7 @@ class ModuleBuilder(L5xElementBuilder):
             minor,
             parent_name,
             parent_port,
-            "false",        # Inhibited: always false in practice; no known bit
+            "true" if e1[0x14] & 0x04 else "false",
             major_fault,
             _ekey_state=ekey_state,
             _slot=slot,
