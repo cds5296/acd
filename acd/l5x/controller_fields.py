@@ -7,7 +7,7 @@ def description_xml(comments):
     if len(texts) > 1:
         raise ValueError('Ambiguous controller description')
     if not texts:
-        return '<Description></Description>'
+        return ''
     text = texts.pop().replace(']]>', ']]]]><![CDATA[>')
     return '<Description><![CDATA[' + text + ']]></Description>'
 

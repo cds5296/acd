@@ -1070,7 +1070,7 @@ class Controller(L5xElement):
         open_tag = base[: idx + 1]
 
         redundancy_enabled_str = "true" if self._redundancy_enabled else "false"
-        # Reference files carry an empty <Description> stub as the first child.
+        # When present, Description precedes the controller configuration.
         parts = [
             open_tag,
             getattr(self, "_description_xml", "<Description></Description>"),
@@ -2873,8 +2873,9 @@ class ControllerBuilder(L5xElementBuilder):
 
         r = RxGeneric.from_bytes(results[0][4])
         self._cur.execute(
-            "SELECT tag_reference, record_string FROM comments WHERE parent="
-            + str((r.comment_id * 0x10000) + r.cip_type)
+            "SELECT tag_reference, record_string FROM comments WHERE parent=? "
+            "AND member_ref=0 AND rung_content=0 AND record_type IN (1, 2)",
+            ((r.comment_id << 16) | r.cip_type,),
         )
         comment_results = self._cur.fetchall()
 
@@ -2883,6 +2884,8 @@ class ControllerBuilder(L5xElementBuilder):
             extended_records[extended_record.attribute_id] = bytes(
                 extended_record.value
             )
+
+        modes = {bytes(a.value) for a in r.extended_records if a.attribute_id == 0x7C}
 
         def _decode_utf16(key):
             raw = extended_records.get(key)
@@ -3246,9 +3249,12 @@ class ControllerBuilder(L5xElementBuilder):
         controller._description_xml = description_xml(comment_results)
         controller._metadata_problems = []
         try:
-            controller.ether_net_ip_mode = topology(extended_records.get(0x7C))
+            if len(modes) > 1:
+                raise ValueError("Conflicting controller Ethernet topology attributes")
+            controller.ether_net_ip_mode = topology(next(iter(modes), None))
         except ValueError as exc:
             controller._metadata_problems.append(str(exc))
+            log.warning("Controller {}: {}", controller_name, exc)
         return controller
 
 
