@@ -1,16 +1,33 @@
-"""Typed module-reference names shared by source languages; no prefix rules."""
+"""Resolve typed tag/module links within the same controller."""
 import struct
+from collections import defaultdict
+
 from acd.record.attribute_bounds import AmbiguousModuleLink
-from acd.record.rx import RxGeneric, read_reference_record
+from acd.record.rx import read_reference_record
+
+
+def _links(record, key):
+    return [a.value for a in record.extended_records if a.attribute_id == key]
+
+
+def _one_oid(values):
+    if len(values) == 1 and len(values[0]) == 4:
+        return int.from_bytes(values[0], "little")
+    return None
 
 
 def resolve(cur, names):
-    records = {oid:(parent,name,bytes(raw)) for oid,parent,name,raw in
-               cur.execute('SELECT object_id,parent_id,comp_name,record FROM comps')}
+    columns = {row[1] for row in cur.execute("PRAGMA table_info(comps)")}
+    query = "SELECT object_id,parent_id,comp_name,record FROM comps"
+    if "record_type" in columns:
+        query += " WHERE record_type != 512"
+    records = {oid: (parent, name, raw) for oid, parent, name, raw in cur.execute(query)}
+    tags, modules = {}, {}
+    reverse = defaultdict(list)
     issues = {}
-    for oid,(parent,name,raw) in records.items():
+    for oid, (parent, name, raw) in records.items():
         collection = records.get(parent)
-        if not collection or collection[1] != 'RxTagCollection':
+        if not collection or collection[1] not in ("RxTagCollection", "RxMapDeviceCollection"):
             continue
         try:
             parsed = read_reference_record(raw)
@@ -18,24 +35,26 @@ def resolve(cur, names):
             names.pop(oid, None)
             issues[oid] = str(exc)
             continue
-        except (ValueError,EOFError,struct.error):
-            continue
-        if parsed.cip_type != 0x6b or parsed.main_record.cip_data_type != 0x1069:
-            continue
-        links = [bytes(attr.value) for attr in parsed.extended_records if attr.attribute_id == 0x66]
-        target=None
-        if len(links)==1 and len(links[0])==4:
-            target=records.get(struct.unpack('<I',links[0])[0])
-        owner=records.get(target[0]) if target else None
-        try:
-            valid_module = bool(target and RxGeneric.from_bytes(target[2]).cip_type == 0x69)
         except (ValueError, EOFError, struct.error):
-            valid_module = False
-        if (valid_module and owner and owner[1]=='RxMapDeviceCollection'
-                and owner[0]==collection[0] and target[1]
-                ):
-            names[oid]=target[1]
+            continue
+        controller, kind, _ = collection
+        if kind == "RxTagCollection":
+            if parsed.cip_type == 0x6b and parsed.main_record.cip_data_type == 0x1069:
+                tags[oid] = (controller, _links(parsed, 0x66))
+        elif parsed.cip_type == 0x69 and name:
+            back = _links(parsed, 0x140) if parsed.record_format_version == 166 else []
+            modules[oid] = (controller, name, back)
+            if back and _one_oid(back) is not None:
+                reverse[controller, _one_oid(back)].append(oid)
+
+    for oid, (owner, forward) in tags.items():
+        candidates = reverse[owner, oid]
+        target = _one_oid(forward) if forward else next(iter(candidates), None)
+        module = modules.get(target)
+        if (module and module[0] == owner and (not candidates or candidates == [target])
+                and (not module[2] or _one_oid(module[2]) == oid)):
+            names[oid] = module[1]
         else:
-            names.pop(oid,None)
-            issues[oid]='Unresolved typed module-reference target'
+            names.pop(oid, None)
+            issues[oid] = "Unresolved typed module-reference target"
     return issues
