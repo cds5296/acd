@@ -1602,7 +1602,9 @@ class ModuleBuilder(L5xElementBuilder):
             product_code = 28
 
         # Resolve parent module name from the modid→name map built by ControllerBuilder.
-        parent_name = self._modid_to_name.get(parent_modid, "Local")
+        if parent_modid not in self._modid_to_name:
+            raise ValueError('Unresolved module parent identity')
+        parent_name = self._modid_to_name[parent_modid]
 
         # MajorFault=true for the root controller module: its parent resolves to itself.
         major_fault = "true" if parent_name == name else "false"
@@ -3129,21 +3131,11 @@ class ControllerBuilder(L5xElementBuilder):
             )
             mod_rows = self._cur.fetchall()
 
-            # First pass: build modid→name map so child modules can resolve their parent name.
-            from acd.record.rx import RxGeneric as _RxG
-            modid_to_name: Dict[int, str] = {}
-            for db_name, mod_oid, mod_rec in mod_rows:
-                display_name = "?" if (db_name.startswith("$") and db_name.endswith("$")) else db_name
-                try:
-                    r = _RxG.from_bytes(bytes(mod_rec))
-                    if r.cip_type == 0x69:
-                        exts = {er.attribute_id: bytes(er.value) for er in r.extended_records}
-                        e1 = exts.get(0x001, b"")
-                        if len(e1) >= 0x30:
-                            modid = struct.unpack("<I", e1[0x2C:0x30])[0]
-                            modid_to_name[modid] = display_name
-                except Exception:
-                    pass
+            from acd.l5x.module_parents import parent_names
+            modid_to_name = parent_names([
+                ('?' if db_name.startswith('$') and db_name.endswith('$') else db_name,
+                 RxGeneric.from_bytes(bytes(mod_rec)))
+                for db_name, mod_oid, mod_rec in mod_rows])
 
             # Second pass: build Module objects.
             modules = []
