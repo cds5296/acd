@@ -716,7 +716,7 @@ class Module(L5xElement):
     major_fault: str
     # Private fields (not serialised as XML attributes)
     _ekey_state: str = field(default="CompatibleModule")
-    _slot: int = field(default=0)
+    _slot: int = field(default=0xFFFFFFFF)
     _ip_address: str = field(default="")
     _backplane_slot: Union[int, None] = field(default=None)
     _chassis_size: Union[int, None] = field(default=None)
@@ -3196,15 +3196,15 @@ class ControllerBuilder(L5xElementBuilder):
             major_rev = "0"
             minor_rev = "0"
 
-        # CommPath: combine the stored path prefix (ends with "\") with the controller
-        # module's backplane slot number (e.g. "EthernetModule\192.168.1.10\Backplane\4").
-        comm_path: Union[str, None] = None
-        if _comm_path_prefix is not None:
-            _ctrl_slot = next(
-                (m._slot for m in modules if m.major_fault == "true"), None
-            )
-            if _ctrl_slot is not None:
-                comm_path = _comm_path_prefix + str(_ctrl_slot)
+        comm_path = _comm_path_prefix
+        if comm_path and comm_path.casefold().endswith("\\backplane\\"):
+            slots = [m._slot for m in modules if m.major_fault == "true"]
+            if len(slots) == 1 and slots[0] not in (None, 0xFFFFFFFF):
+                comm_path += str(slots[0])
+            else:
+                log.warning("Controller {}: omitting incomplete backplane CommPath without a known slot",
+                            controller_name)
+                comm_path = None
 
         controller = Controller(
             controller_name,
