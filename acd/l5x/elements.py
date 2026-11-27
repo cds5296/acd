@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 from os import PathLike
 from pathlib import Path
 from sqlite3 import Cursor
-from typing import List, Tuple, Dict, Union
+from typing import List, Tuple, Dict, Union, Optional
 
 from loguru import logger as log
 
@@ -915,7 +915,8 @@ class Routine(L5xElement):
                     continue
                 comment_xml = ""
                 if i in self._rung_comments:
-                    comment_text = self._rung_comments[i]
+                    comment_text = self._rung_comments[i].replace("\r\n", "\n")
+                    comment_text = comment_text.replace("]]>", "]]]]><![CDATA[>")
                     comment_xml = f'<Comment><![CDATA[{comment_text}]]></Comment>'
                 rung_xmls.append(
                     f'<Rung Number="{i}" Type="N">'
@@ -2353,6 +2354,8 @@ def routine_type_enum(idx: int) -> str:
 
 @dataclass
 class RoutineBuilder(L5xElementBuilder):
+    _rung_keys: Optional[Dict[int, Optional[int]]] = None
+
     def build(self) -> Routine:
         self._cur.execute(
             "SELECT comp_name, object_id, parent_id, record FROM comps WHERE object_id="
@@ -2402,26 +2405,36 @@ class RoutineBuilder(L5xElementBuilder):
                     )
                 rungs = [_resolve(r) if r else r for r in rungs]
 
-        # Fetch rung-level comments from the comments table.
-        # Rung comments are stored under the routine's own comment parent key
-        # (comment_id * 0x10000 + cip_type), as AsciiRecord (record_type=1) entries
-        # where rung_content != 0 (distinguishes user rung comments from internal
-        # metadata strings like FBDRoutineDescription which have rung_content=0).
-        # The object_id field is the 1-based rung index (rung 0 -> object_id=1).
-        rung_comments: Dict[int, str] = {}
-        try:
-            comment_parent = (r.comment_id * 0x10000) + r.cip_type
-            self._cur.execute(
-                "SELECT object_id, record_string FROM comments "
-                "WHERE parent=? AND record_type=1 AND rung_content!=0",
-                (comment_parent,),
-            )
-            for obj_id, rec_str in self._cur.fetchall():
-                rung_index = obj_id - 1  # convert 1-based to 0-based
-                if rung_index >= 0 and rec_str and rung_index not in rung_comments:
-                    rung_comments[rung_index] = rec_str
-        except Exception:
-            pass
+        # The parent can be shared by routines. member_ref identifies the routine,
+        # and the high half of rung_content identifies the rung in the AST or a scoped region link.
+        routine_key = struct.unpack_from("<H", r.record_buffer, 2)[0]
+        self._cur.execute(
+            "SELECT record_string, rung_content FROM comments "
+            "WHERE parent=? AND member_ref=? AND record_type IN (1, 2) AND rung_content!=0",
+            ((r.comment_id << 16) | r.cip_type, (routine_key << 16) | 0x6D),
+        )
+        comments = [(text, content) for text, content in self._cur if text]
+        keys = self._rung_keys or {}
+        indices = {}
+        for index, rung_id in enumerate(rung_ids):
+            key = keys.get(rung_id)
+            if key is not None:
+                # A repeated key within this routine has no unique destination.
+                indices[key] = None if key in indices else index
+
+        candidates = {}
+        unresolved = 0
+        for text, content in comments:
+            index = indices.get(content >> 16)
+            if index is None or not 0 <= index < len(rungs):
+                unresolved += 1
+                continue
+            candidates.setdefault(index, set()).add(text)
+        rung_comments = {index: next(iter(texts)) for index, texts in candidates.items()
+                         if len(texts) == 1}
+        if unresolved or len(candidates) != len(rung_comments):
+            log.warning("Routine {} ({}): {} unmatched rung comments, {} conflicting destinations",
+                        name, self._object_id, unresolved, len(candidates) - len(rung_comments))
 
         # Some firmware revisions store the routine type in a record layout
         # where the usual type field reads back 0 (TypeLess) even though the
@@ -2514,6 +2527,8 @@ def _parse_aoi_nameless(data: bytes) -> dict:
 
 @dataclass
 class AoiBuilder(L5xElementBuilder):
+    _rung_keys: Optional[Dict[int, Optional[int]]] = None
+
     def build(self) -> AOI:
         self._cur.execute(
             "SELECT comp_name, object_id, parent_id, record FROM comps WHERE object_id="
@@ -2614,7 +2629,7 @@ class AoiBuilder(L5xElementBuilder):
             )
             for (child_oid,) in self._cur.fetchall():
                 try:
-                    routines.append(RoutineBuilder(self._cur, child_oid).build())
+                    routines.append(RoutineBuilder(self._cur, child_oid, self._rung_keys).build())
                 except Exception:
                     pass
 
@@ -2659,6 +2674,8 @@ class AoiBuilder(L5xElementBuilder):
 class ProgramBuilder(L5xElementBuilder):
     _data_types_map: Dict[str, "DataType"] = field(default_factory=dict)
     _redundancy_enabled: bool = field(default=False)
+
+    _rung_keys: Optional[Dict[int, Optional[int]]] = None
 
     def build(self) -> Program:
         self._cur.execute(
@@ -2717,7 +2734,7 @@ class ProgramBuilder(L5xElementBuilder):
 
         routines = []
         for child in routine_results:
-            routines.append(RoutineBuilder(self._cur, child[1]).build())
+            routines.append(RoutineBuilder(self._cur, child[1], self._rung_keys).build())
 
         # Get the Program Scoped Tags
         tag_collection_id = _required_program_collection(
@@ -2855,6 +2872,8 @@ class ControllerBuilder(L5xElementBuilder):
     # Optional richer CIP-identity -> catalog-number table for resolving module
     # CatalogNumbers and the controller ProcessorType. None -> built-in only.
     _catalog_table: Union[Dict[Tuple[int, int, int], str], None] = None
+
+    _rung_keys: Optional[Dict[int, Optional[int]]] = None
 
     def build(self) -> Controller:
         self._cur.execute(
@@ -3054,7 +3073,7 @@ class ControllerBuilder(L5xElementBuilder):
         for result in program_records:
             _program_object_id = result[1]
             programs.append(
-                ProgramBuilder(self._cur, _program_object_id, data_types_map, redundancy_enabled).build()
+                ProgramBuilder(self._cur, _program_object_id, data_types_map, redundancy_enabled, self._rung_keys).build()
             )
 
         # Build task schedule ID → program name map. Legacy projects keep this
@@ -3090,7 +3109,7 @@ class ControllerBuilder(L5xElementBuilder):
         aois: List[AOI] = []
         for result in results:
             _aoi_object_id = result[1]
-            aois.append(AoiBuilder(self._cur, _aoi_object_id).build())
+            aois.append(AoiBuilder(self._cur, _aoi_object_id, self._rung_keys).build())
 
         # Get the Module (IO) Collection and build all Module elements.
         self._cur.execute(
