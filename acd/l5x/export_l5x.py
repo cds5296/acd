@@ -61,8 +61,9 @@ class ExportL5x:
         self._db = sqlite3.connect(
             os.path.join(self._temp_dir, _DEFAULT_SQL_DATABASE_NAME)
         )
-        self._db.execute("PRAGMA journal_mode=WAL")
-        self._db.execute("PRAGMA synchronous=OFF")
+        from acd.database.retry import setup_pragma
+        setup_pragma(self._db, "PRAGMA journal_mode=WAL")
+        setup_pragma(self._db, "PRAGMA synchronous=OFF")
         self._cur: Cursor = self._db.cursor()
 
         log.debug("Create Comps table in sqllite db")
