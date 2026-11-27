@@ -666,6 +666,7 @@ class Parameter(L5xElement):
     constant: Union[str, None]  # "false" for non-MESSAGE InOut, None otherwise (omitted)
     dimensions: Union[str, None]  # array size; None for scalars (omitted from XML)
     _description: Union[str, None] = field(default=None)
+    alias_for: Union[str, None] = None
 
     def __post_init__(self):
         super().__post_init__()
@@ -2258,7 +2259,7 @@ class ParameterBuilder(L5xElementBuilder):
                 if desc_row and desc_row[0]:
                     description = desc_row[0]
 
-        return Parameter(
+        parameter = Parameter(
             name,
             name,
             "Base",
@@ -2272,6 +2273,14 @@ class ParameterBuilder(L5xElementBuilder):
             dimensions,
             description,
         )
+
+        if 0x65 in exts:
+            parameter.tag_type = 'Alias'
+            parameter.alias_for = TagBuilder(self._cur, self._object_id)._legacy_alias_for(exts[0x65])
+            if not parameter.alias_for or any(ord(c) < 32 or c == '@' for c in parameter.alias_for):
+                raise ValueError('Invalid AOI parameter alias target')
+            parameter.data_type = parameter.dimensions = parameter.constant = None
+        return parameter
 
 
 @dataclass
@@ -2540,6 +2549,8 @@ class AoiBuilder(L5xElementBuilder):
         name = results[0][0]
 
         # --- Revision (major.minor) from ext[0x01] ---
+        exts = {}
+        declaration_issues = []
         _r_aoi: Union[RxGeneric, None] = None
         try:
             r = RxGeneric.from_bytes(aoi_record)
@@ -2549,8 +2560,8 @@ class AoiBuilder(L5xElementBuilder):
             rev_major = struct.unpack_from("<H", e01, 0x1A)[0] if len(e01) > 0x1B else 1
             rev_minor = struct.unpack_from("<H", e01, 0x1C)[0] if len(e01) > 0x1D else 0
         except Exception:
-            rev_major, rev_minor = 1, 0
-        revision = f"{rev_major}.{rev_minor}"
+            rev_major = rev_minor = None
+        revision = f"{rev_major}.{rev_minor}" if rev_major is not None else None
 
         # --- Vendor from comps record ---
         vlen = struct.unpack_from("<H", aoi_record, 0xA6)[0] if len(aoi_record) > 0xA8 else 0
@@ -2568,6 +2579,7 @@ class AoiBuilder(L5xElementBuilder):
             meta = {"created_by": "", "created_date": "", "edited_by": "", "edited_date": "",
                     "software_revision": "", "revision_extension": None}
 
+        from acd.l5x.aoi_contract import execution_word
         parameters: List[Parameter] = []
         local_tags: List[LocalTag] = []
         routines: List[Routine] = []
@@ -2583,38 +2595,38 @@ class AoiBuilder(L5xElementBuilder):
         if tag_coll_row:
             tag_coll_oid = tag_coll_row[0]
             self._cur.execute(
-                "SELECT object_id, record FROM comps WHERE parent_id="
+                "SELECT object_id, record, comp_name FROM comps WHERE parent_id="
                 + str(tag_coll_oid)
                 + " AND record_type != 512"
                 + " ORDER BY seq_number"
             )
-            for child_oid, child_rec in self._cur.fetchall():
-                child_rec = bytes(child_rec)
-                # Determine whether this is a parameter or a local tag by inspecting
-                # ext01[0x20E]: bits 0x04 (Input) or 0x08 (Output) indicate a parameter.
-                is_param = False
+            from acd.l5x.aoi_contract import ordered_declarations
+            import re
+            records = self._cur.fetchall()
+            names = {oid: member for oid, _, member in records}
+            rows = [(oid, raw) for oid, raw, member in records
+                    if not re.fullmatch(r'(?:__l[0-9A-Fa-f]{16}|__CLONE[0-9A-Fa-f]{8})', member)]
+            selected = {oid for oid, _ in rows}
+            for oid, _, member in records:
+                if oid not in selected:
+                    declaration_issues.append(dict(code='aoi-declaration-visibility', owner=name + '/' + member,
+                        object_id=oid, reason='Editor-style declaration name; visibility requires independent evidence'))
+            try:
+                children = ordered_declarations(rows)
+            except ValueError as exc:
+                children = []
+                declaration_issues.append(dict(code='aoi-declarations', owner=name, reason=str(exc)))
+            for child_oid, raw in children:
                 try:
-                    r_child = RxGeneric.from_bytes(child_rec)
-                    exts_child: Dict[int, bytes] = {
-                        er.attribute_id: bytes(er.value)
-                        for er in r_child.extended_records
-                    }
-                    ext01 = exts_child.get(0x01, b"")
-                    flags = _aoi_tag_usage_flags(ext01)
-                    is_param = bool(flags & 0x0C)
-                except Exception:
-                    pass
-
-                if is_param:
-                    try:
+                    parsed = RxGeneric.from_bytes(bytes(raw))
+                    from acd.l5x.aoi_contract import declaration_metadata
+                    if _aoi_tag_usage_flags(declaration_metadata(parsed)) & 0x0C:
                         parameters.append(ParameterBuilder(self._cur, child_oid).build())
-                    except Exception:
-                        pass
-                else:
-                    try:
+                    else:
                         local_tags.append(LocalTagBuilder(self._cur, child_oid).build())
-                    except Exception:
-                        pass
+                except (ValueError, EOFError, struct.error) as exc:
+                    declaration_issues.append(dict(code='aoi-declaration', owner=name + '/' + names[child_oid],
+                                                   object_id=child_oid, reason=str(exc)))
 
         # --- Extract Routines from RxRoutineCollection ---
         self._cur.execute(
@@ -2658,11 +2670,11 @@ class AoiBuilder(L5xElementBuilder):
             except Exception:
                 pass
 
-        return AOI(
+        aoi = AOI(
             name, name, revision,
             meta["revision_extension"],
             vendor,
-            "false", "false", "false",
+            execution_word(exts, 0x194), None, None,
             meta["created_date"], meta["created_by"],
             meta["edited_date"], meta["edited_by"],
             meta["software_revision"],
@@ -2671,6 +2683,8 @@ class AoiBuilder(L5xElementBuilder):
             revision_note,
             unreadable_routines,
         )
+        aoi._declaration_issues = declaration_issues
+        return aoi
 
 
 @dataclass
