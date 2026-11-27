@@ -31,3 +31,12 @@ def execution_word(attributes, key):
     if len(raw) != 4 or struct.unpack('<I', raw)[0] not in (0, 1):
         raise ValueError('Unsupported AOI execution word')
     return 'true' if struct.unpack('<I', raw)[0] else 'false'
+
+
+def declaration_metadata(record):
+    if record.cip_type != 0x338 or record.record_format_version != 63:
+        raise ValueError('Unsupported AOI declaration revision or class')
+    fields = [bytes(a.value) for a in record.extended_records if a.attribute_id == 1]
+    if len(fields) != 1 or len(fields[0]) != 590:
+        raise ValueError('Missing, ambiguous or incorrectly sized AOI declaration metadata')
+    return fields[0]

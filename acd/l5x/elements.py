@@ -2616,6 +2616,11 @@ class AoiBuilder(L5xElementBuilder):
             names = {oid: member for oid, _, member in records}
             rows = [(oid, raw) for oid, raw, member in records
                     if not re.fullmatch(r'(?:__l[0-9A-Fa-f]{16}|__CLONE[0-9A-Fa-f]{8})', member)]
+            selected = {oid for oid, _ in rows}
+            for oid, _, member in records:
+                if oid not in selected:
+                    declaration_issues.append(dict(code='aoi-declaration-visibility', owner=name + '/' + member,
+                        object_id=oid, reason='Editor-style declaration name; visibility requires independent evidence'))
             try:
                 children = ordered_declarations(rows)
             except ValueError as exc:
@@ -2624,10 +2629,8 @@ class AoiBuilder(L5xElementBuilder):
             for child_oid, raw in children:
                 try:
                     parsed = RxGeneric.from_bytes(bytes(raw))
-                    declaration_metadata = [bytes(a.value) for a in parsed.extended_records if a.attribute_id == 1]
-                    if len(declaration_metadata) != 1 or len(declaration_metadata[0]) <= 0x20F:
-                        raise ValueError('Missing or truncated AOI declaration metadata')
-                    if _aoi_tag_usage_flags(declaration_metadata[0]) & 0x0C:
+                    from acd.l5x.aoi_contract import declaration_metadata
+                    if _aoi_tag_usage_flags(declaration_metadata(parsed)) & 0x0C:
                         parameters.append(ParameterBuilder(self._cur, child_oid).build())
                     else:
                         local_tags.append(LocalTagBuilder(self._cur, child_oid).build())
