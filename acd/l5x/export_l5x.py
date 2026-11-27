@@ -182,6 +182,8 @@ class ExportL5x:
             self._controller = ControllerBuilder(
                 self._cur, _catalog_table=self._catalog_table
             ).build()
+            from acd.l5x.numeric_values import materialize
+            materialize(self._controller, self._cur)
         return self._controller
 
     def st_decoder(self) -> "STDecoder": # noqa
