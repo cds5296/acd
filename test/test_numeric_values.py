@@ -74,6 +74,7 @@ def test_materialization_resolves_unique_source_and_reports_omissions():
                                data_type='DINT', dimensions=None, _l5x_exclude=False)
 
     good, missing, duplicate = tag('Good', 1), tag('Missing', 2), tag('Duplicate', 3)
+    good.dimensions = '1,1'
     program = SimpleNamespace(name='ProgramA', tags=[missing, duplicate])
     controller = SimpleNamespace(name='ControllerA', tags=[good], programs=[program])
     messages = []
@@ -88,8 +89,10 @@ def test_materialization_resolves_unique_source_and_reports_omissions():
         logger.remove(sink)
         db.close()
     data = ET.fromstring('<Tag>' + good._source_value_xml + '</Tag>')
-    assert data.findtext('Data') == '-17'
-    assert data.find('.//DataValue').get('Value') == '-17'
+    assert good.dimensions == '1 1'
+    assert data.findtext('Data') == '[-17]'
+    assert data.find('.//Array').get('Dimensions') == '1,1'
+    assert data.find('.//Element').attrib == {'Index': '[0,0]', 'Value': '-17'}
     for item in [missing, duplicate]:
         assert item._source_value_xml == ''
         assert any(f'ProgramA / {item.name} (instance {item._data_table_instance})' in msg

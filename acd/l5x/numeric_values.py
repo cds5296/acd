@@ -79,6 +79,9 @@ def materialize(controller, cur):
             try:
                 tag._source_value_xml = numeric_xml(kind, tag.dimensions,
                     source_value(cur, tag._data_table_instance))
+                if tag.dimensions:
+                    # Tag extents are space-separated; the Decorated Array uses commas.
+                    tag.dimensions = ' '.join(map(str, dimensions(tag.dimensions)))
                 tag._value_problem = None
             except (ValueError, EOFError, struct.error) as exc:
                 tag._source_value_xml = ''
