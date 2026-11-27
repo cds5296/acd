@@ -1365,7 +1365,7 @@ class DataTypeBuilder(L5xElementBuilder):
             member_collection_id = member_results[0][1]
 
             self._cur.execute(
-                f"SELECT comp_name, object_id, parent_id, seq_number, record FROM comps WHERE parent_id={member_collection_id} ORDER BY seq_number"
+                f"SELECT comp_name, object_id, parent_id, seq_number, record FROM comps WHERE parent_id={member_collection_id} AND record_type != 512 ORDER BY seq_number"
             )
             children_results = self._cur.fetchall()
 
@@ -2747,16 +2747,16 @@ class ProgramBuilder(L5xElementBuilder):
             "RxTagCollection",
         )
 
-        self._cur.execute(
-            "SELECT comp_name, object_id, parent_id, record_type FROM comps WHERE parent_id="
-            + str(tag_collection_id)
-        )
-        results = self._cur.fetchall()
+        from acd.l5x.declarations import live_tag_records
+        results = live_tag_records(self._cur, tag_collection_id)
         tags: List[Tag] = []
         for result in results:
             tag = TagBuilder(self._cur, result[1]).build()
             tag._data_types_map = self._data_types_map
             tags.append(tag)
+        from acd.l5x.declarations import unique_tags
+        tags = unique_tags(tags)
+
 
         self._cur.execute(
             "SELECT tag_reference, record_string FROM comments WHERE parent="
@@ -3020,11 +3020,8 @@ class ControllerBuilder(L5xElementBuilder):
         if len(results) > 1:
             raise Exception("Contains more than one controller tag collection")
         _tag_collection_object_id = results[0][1]
-        self._cur.execute(
-            "SELECT comp_name, object_id, parent_id, record_type FROM comps WHERE parent_id="
-            + str(_tag_collection_object_id)
-        )
-        results = self._cur.fetchall()
+        from acd.l5x.declarations import live_tag_records
+        results = live_tag_records(self._cur, _tag_collection_object_id)
         tags: List[Tag] = []
         # Tags that parse are exported; a tag this builder cannot faithfully
         # reconstruct (an unexpected descriptor layout for this firmware, a
