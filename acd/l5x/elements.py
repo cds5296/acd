@@ -1968,21 +1968,6 @@ class TagBuilder(L5xElementBuilder):
         return resolved
 
     def build(self) -> Tag:
-        tag = self._build_tag()
-        row = self._cur.execute('SELECT record FROM comps WHERE object_id=?',
-                                (self._object_id,)).fetchone()
-        parsed = RxGeneric.from_bytes(bytes(row[0]))
-        if not isinstance(parsed, LegacyRxGeneric) and parsed.cip_type in (0x68, 0x6B, 0x6C):
-            attrs = {a.attribute_id: bytes(a.value) for a in parsed.extended_records}
-            if 0x65 in attrs:
-                tag.tag_type = 'Alias'
-                tag.alias_for = self._legacy_alias_for(attrs[0x65])
-                tag.data_type = None
-                tag.constant = None
-                tag.dimensions = None
-        return tag
-
-    def _build_tag(self) -> Tag:
         self._cur.execute(
             "SELECT comp_name, object_id, parent_id, record FROM comps WHERE object_id="
             + str(self._object_id)
@@ -2116,6 +2101,23 @@ class TagBuilder(L5xElementBuilder):
                 consume_info=consume_info,
             )
 
+        name = results[0][0]
+        if 0x01 in extended_records:
+            metadata = extended_records[0x01]
+            name_length = struct.unpack_from("<H", metadata)[0]
+            name = metadata[2 : 2 + name_length].decode("utf-8", errors="replace")
+
+        raw_radix = r.main_record.radix
+        if 0x65 in extended_records:
+            target = self._legacy_alias_for(extended_records[0x65])
+            if not target or "\x00" in target:
+                raise ValueError("Invalid modern alias path")
+            return Tag(
+                name, name, "Alias", None, radix_enum(raw_radix) if raw_radix else None,
+                external_access, None, None, r.main_record.data_table_instance,
+                comment_results, alias_for=target,
+            )
+
         if r.main_record.data_type == 0xFFFFFFFF:
             data_type = ""
         else:
@@ -2126,30 +2128,7 @@ class TagBuilder(L5xElementBuilder):
             data_type_results = self._cur.fetchall()
             data_type = data_type_results[0][0] if data_type_results else ""
 
-        if 0x01 not in extended_records:
-            # Name comes from comp_name in the database; radix from main_record
-            raw_radix = r.main_record.radix
-            radix = radix_enum(raw_radix)
-            dim_parts = []
-            if r.main_record.dimension_1 != 0:
-                dim_parts.append(str(r.main_record.dimension_1))
-            if r.main_record.dimension_2 != 0:
-                dim_parts.append(str(r.main_record.dimension_2))
-            if r.main_record.dimension_3 != 0:
-                dim_parts.append(str(r.main_record.dimension_3))
-            dimensions = ",".join(dim_parts) if dim_parts else None
-            return Tag(
-                results[0][0], results[0][0], "Base", data_type, radix,
-                external_access, constant, dimensions, r.main_record.data_table_instance,
-                comment_results,
-            )
-
-        name_length = struct.unpack("<H", extended_records[0x01][0:2])[0]
-        name = bytes(extended_records[0x01][2 : name_length + 2]).decode("utf-8", errors="replace")
-
-        raw_radix = r.main_record.radix
         radix = radix_enum(raw_radix)
-
         dim_parts = []
         if r.main_record.dimension_1 != 0:
             dim_parts.append(str(r.main_record.dimension_1))
