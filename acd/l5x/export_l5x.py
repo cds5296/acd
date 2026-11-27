@@ -127,6 +127,8 @@ class ExportL5x:
         # Store on self for use during write-back (patch_sbregion_dat needs id_to_name).
         name_lookup = {oid: t[2] for oid, t in comps_by_id.items()}
         self._id_to_name: Dict[int, str] = name_lookup
+        from acd.l5x.module_references import resolve
+        self._module_reference_issues = resolve(self._cur, name_lookup)
 
         # SbRegion (rungs) is read BEFORE the Region Map. populate_region_map's
         # fallback path (see _parse_region_map) needs the set of real rung
@@ -267,7 +269,8 @@ class ExportL5x:
             self._project._file_order = self._file_order
             self._project._footer_unknown = self._footer_unknown
             self._project._id_to_name = self._id_to_name
-            self._project._reference_diagnostics = list(getattr(self, "_module_reference_issues", []))
+            self._project._reference_diagnostics = [dict(code='module-reference', object_id=oid, reason=reason)
+                                                    for oid, reason in self._module_reference_issues.items()]
             self._project._reference_diagnostics.extend(self._layout_problems)
             from acd.l5x.completeness import source_issues
             self._project._reference_diagnostics.extend(source_issues(self._cur, self._project.controller))
