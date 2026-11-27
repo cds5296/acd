@@ -1042,6 +1042,7 @@ class Controller(L5xElement):
     # _redundancy_enabled is NOT serialised as a regular XML attribute (underscore prefix
     # skips it in the base to_xml()); it is used only to build the <RedundancyInfo> element.
     _redundancy_enabled: bool = field(default=False)
+    ether_net_ip_mode: Union[str, None] = None
 
     def __post_init__(self):
         super().__post_init__()
@@ -1051,6 +1052,7 @@ class Controller(L5xElement):
             "sfc_last_scan": "SFCLastScan",
             "project_sn": "ProjectSN",
             "can_use_rpi_from_producer": "CanUseRPIFromProducer",
+            "ether_net_ip_mode": "EtherNetIPMode",
         }
 
     def to_xml(self) -> str:
@@ -1070,10 +1072,10 @@ class Controller(L5xElement):
         open_tag = base[: idx + 1]
 
         redundancy_enabled_str = "true" if self._redundancy_enabled else "false"
-        # Reference files carry an empty <Description> stub as the first child.
+        # When present, Description precedes the controller configuration.
         parts = [
             open_tag,
-            "<Description></Description>",
+            getattr(self, "_description_xml", "<Description></Description>"),
             f'<RedundancyInfo Enabled="{redundancy_enabled_str}" KeepTestEditsOnSwitchOver="false"/>',
             '<Security Code="0" ChangesToDetect="16#ffff_ffff_ffff_ffff"/>',
             '<SafetyInfo/>',
@@ -2885,8 +2887,9 @@ class ControllerBuilder(L5xElementBuilder):
 
         r = RxGeneric.from_bytes(results[0][4])
         self._cur.execute(
-            "SELECT tag_reference, record_string FROM comments WHERE parent="
-            + str((r.comment_id * 0x10000) + r.cip_type)
+            "SELECT tag_reference, record_string FROM comments WHERE parent=? "
+            "AND member_ref=0 AND rung_content=0 AND record_type IN (1, 2)",
+            ((r.comment_id << 16) | r.cip_type,),
         )
         comment_results = self._cur.fetchall()
 
@@ -2895,6 +2898,8 @@ class ControllerBuilder(L5xElementBuilder):
             extended_records[extended_record.attribute_id] = bytes(
                 extended_record.value
             )
+
+        modes = {bytes(a.value) for a in r.extended_records if a.attribute_id == 0x7C}
 
         def _decode_utf16(key):
             raw = extended_records.get(key)
@@ -3255,6 +3260,16 @@ class ControllerBuilder(L5xElementBuilder):
         # Diagnostics: controller-scoped tags that could not be faithfully
         # reconstructed (see the tag loop above). Empty when everything parsed.
         controller._skipped_tags = skipped_tags
+        from acd.l5x.controller_fields import description_xml, topology
+        controller._description_xml = description_xml(comment_results)
+        controller._metadata_problems = []
+        try:
+            if len(modes) > 1:
+                raise ValueError("Conflicting controller Ethernet topology attributes")
+            controller.ether_net_ip_mode = topology(next(iter(modes), None))
+        except ValueError as exc:
+            controller._metadata_problems.append(str(exc))
+            log.warning("Controller {}: {}", controller_name, exc)
         return controller
 
 
