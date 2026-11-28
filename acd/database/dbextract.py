@@ -63,4 +63,8 @@ class DbExtract:
     filename: str
 
     def read(self) -> Dat:
-        return Dat.from_file(self.filename)
+        # Kaitai keeps its root stream for lazy instances. A file-backed root
+        # can survive in parser cycles and lock extracted files on Windows.
+        # Retain a seekable memory stream, with no file descriptor to collect.
+        with open(self.filename, 'rb') as stream:
+            return Dat.from_bytes(stream.read())
