@@ -1,9 +1,12 @@
 import argparse
 import os
+import shutil
 import sqlite3
 import struct
 import tempfile
-from dataclasses import dataclass, field
+from contextlib import ExitStack
+from weakref import finalize
+from dataclasses import dataclass
 from pathlib import Path
 from sqlite3 import Cursor
 from typing import Dict, List, Tuple, Union
@@ -29,14 +32,8 @@ from acd.record.rung_links import supplement_rung_keys
 @dataclass
 class ExportL5x:
     input_filename: os.PathLike
-    # Default to a unique temp dir per ExportL5x instance. The original default
-    # was the shared relative dir "build", which made concurrent/parallel test
-    # runs collide on build/acd.db (Windows locks the SQLite file while a
-    # connection is open, so a second run's os.remove in __post_init__ fails).
-    # tempfile.mkdtemp() was the documented intent (see the original comment);
-    # each instance now gets its own dir so runs are isolated. Pass a specific
-    # dir (e.g. "build") to restore the old behaviour for manual inspection.
-    _temp_dir: str = field(default_factory=lambda: tempfile.mkdtemp(prefix="acd-build-"))
+    # An explicit directory retains extraction files for inspection when vacant.
+    _temp_dir: Union[str, None] = None
     _controller: Union[Controller, None] = None
     _project: Union[RSLogix5000Content, None] = None
     # Optional richer catalog (CIP identity -> catalog number) used to resolve
@@ -48,16 +45,57 @@ class ExportL5x:
     _catalog_table: Union[Dict[Tuple[int, int, int], str], None] = None
 
     def __post_init__(self):
-        log.info(
-            "Creating temporary directory (if it doesn't exist to store ACD database files - "
-            + self._temp_dir
-        )
+        self._resources = ExitStack()
+        # A direct reader may use its cursor without ever requesting .project.
+        self._release = finalize(self, self._resources.close)
+        try:
+            if self._temp_dir is None:
+                self._own_workspace()
+            archive = Unzip(self.input_filename)
+            self._prepare_directory(archive)
+            self._initialize(archive)
+        except BaseException:
+            if getattr(self, '_db', None) is not None:
+                self._db.close()
+            self.close()
+            raise
+        self._resources.callback(self._db.close)
+
+    def _own_workspace(self, parent=None):
+        self._temp_dir = tempfile.mkdtemp(prefix="acd-build-", dir=parent)
+        self._resources.callback(shutil.rmtree, self._temp_dir)
+
+    def _prepare_directory(self, archive):
+        directory = Path(self._temp_dir)
+        directory.mkdir(parents=True, exist_ok=True)
+        db_name = "acd.db"
+        sqlite_files = {db_name, "acd.db-wal", "acd.db-shm", "acd.db-journal"}
+        names = set()
+        for entry in archive.records:
+            name = entry.filename
+            if (not name or Path(name).name != name or name in (".", "..")
+                    or name.casefold() in sqlite_files or name.casefold() in names):
+                raise ValueError("Invalid or conflicting extraction filename")
+            names.add(name.casefold())
+
+        # Reserve the database exclusively. Existing archive members or SQLite
+        # sidecars belong to the caller, even if they look like previous exports.
+        destinations = [entry.filename for entry in archive.records]
+        destinations.extend(sqlite_files - {db_name})
+        if not any(os.path.lexists(directory / name) for name in destinations):
+            try:
+                (directory / db_name).touch(exist_ok=False)
+                return
+            except FileExistsError:
+                pass
+        self._own_workspace(directory)
+
+    def close(self):
+        """Release the database first, then remove only owned scratch."""
+        self._release()
+
+    def _initialize(self, archive):
         _DEFAULT_SQL_DATABASE_NAME = "acd.db"
-        if os.path.exists(os.path.join(self._temp_dir, _DEFAULT_SQL_DATABASE_NAME)):
-            os.remove(os.path.join(self._temp_dir, _DEFAULT_SQL_DATABASE_NAME))
-        if not os.path.exists(os.path.join(self._temp_dir)):
-            os.makedirs(self._temp_dir)
-        log.info("Creating sqllite database to store ACD database records")
         self._db = sqlite3.connect(
             os.path.join(self._temp_dir, _DEFAULT_SQL_DATABASE_NAME)
         )
@@ -92,17 +130,16 @@ class ExportL5x:
         )
 
         log.info("Extracting ACD database file")
-        unzip = Unzip(self.input_filename)
-        unzip.write_files(self._temp_dir)
+        archive.write_files(self._temp_dir, overwrite=False)
 
         # Preserve all embedded files in original order for round-trip writing.
         # Read directly from the ACD archive (pre-decompression) so that
         # compressed files are carried as-is and write-back is byte-identical.
-        self._file_order: List[str] = [r.filename for r in unzip.records]
-        self._footer_unknown: int = unzip.header._unknown_two
+        self._file_order: List[str] = [r.filename for r in archive.records]
+        self._footer_unknown: int = archive.header._unknown_two
         self._raw_files: Dict[str, bytes] = {}
         with open(self.input_filename, "rb") as acd_fh:
-            for record in unzip.records:
+            for record in archive.records:
                 acd_fh.seek(record.file_offset)
                 self._raw_files[record.filename] = acd_fh.read(record.file_length)
 
@@ -259,33 +296,29 @@ class ExportL5x:
     @property
     def project(self):
         if self._project is None:
-            self._project = ProjectBuilder(
-                Path(os.path.join(self._temp_dir, "QuickInfo.XML"))
-            ).build()
-            self._project.controller = self.controller
-            self._project.conversion_notes = list(self._st_notes)
-            self._project._st_diagnostics = list(self._st_diagnostics)
-            self._project._raw_files = self._raw_files
-            self._project._file_order = self._file_order
-            self._project._footer_unknown = self._footer_unknown
-            self._project._id_to_name = self._id_to_name
-            self._project._reference_diagnostics = [dict(code='module-reference', object_id=oid, reason=reason)
-                                                    for oid, reason in self._module_reference_issues.items()]
-            self._project._reference_diagnostics.extend(self._layout_problems)
-            from acd.l5x.completeness import source_issues
-            self._project._reference_diagnostics.extend(source_issues(self._cur, self._project.controller))
-            # The sqlite connection (and its WAL/journal files) is only needed
-            # while the object tree above is being built. Left open, it holds
-            # an OS-level lock on acd.db inside _temp_dir for as long as this
-            # ExportL5x instance is alive -- on Windows that lock makes the
-            # caller's shutil.rmtree(temp_dir, ignore_errors=True) silently
-            # fail (ignore_errors swallows the PermissionError), so the temp
-            # directory is never actually removed. Across many files in one
-            # process (e.g. batch-converting a folder) those leaked temp dirs
-            # accumulate without bound and can fill the disk. Close it here,
-            # once the tree is fully built and nothing will query it again.
-            self._db.close()
+            try:
+                self._project = self._build_project()
+            finally:
+                self.close()
         return self._project
+
+    def _build_project(self):
+        project = ProjectBuilder(
+            Path(os.path.join(self._temp_dir, "QuickInfo.XML"))
+        ).build()
+        project.controller = self.controller
+        project.conversion_notes = list(self._st_notes)
+        project._st_diagnostics = list(self._st_diagnostics)
+        project._raw_files = self._raw_files
+        project._file_order = self._file_order
+        project._footer_unknown = self._footer_unknown
+        project._id_to_name = self._id_to_name
+        project._reference_diagnostics = [dict(code='module-reference', object_id=oid, reason=reason)
+                                                for oid, reason in self._module_reference_issues.items()]
+        project._reference_diagnostics.extend(self._layout_problems)
+        from acd.l5x.completeness import source_issues
+        project._reference_diagnostics.extend(source_issues(self._cur, project.controller))
+        return project
 
     def populate_region_map(self):
         self._cur.execute(

@@ -1,6 +1,5 @@
 import os
-import tempfile
-import shutil
+from contextlib import closing
 import xml.dom.minidom
 from abc import abstractmethod
 from dataclasses import dataclass
@@ -60,6 +59,8 @@ def load_acd(path, temp_dir: str = None, catalog_file=None) -> RSLogix5000Conten
         path: Path to the .ACD file.
         temp_dir: Directory for SQLite and extracted files.  A temporary
             directory is created and cleaned up automatically if omitted.
+            If extraction would collide with existing files, use a temporary
+            child and leave the supplied directory intact.
         catalog_file: Optional external catalog (JSON path or dict) merged over
             the built-in table so out-of-table CPUs/modules resolve to real part
             numbers. None -> built-in only (default, unchanged).
@@ -69,15 +70,8 @@ def load_acd(path, temp_dir: str = None, catalog_file=None) -> RSLogix5000Conten
         The project also carries _raw_files / _file_order / _footer_unknown
         for use by save_acd().
     """
-    cleanup = temp_dir is None
-    if cleanup:
-        temp_dir = tempfile.mkdtemp(prefix="acd_load_")
-    try:
-        exporter = ExportL5x(str(path), temp_dir, _catalog_table=_resolve_catalog_table(catalog_file))
-        return exporter.project
-    finally:
-        if cleanup:
-            shutil.rmtree(temp_dir, ignore_errors=True)
+    with closing(ExportL5x(str(path), temp_dir, _catalog_table=_resolve_catalog_table(catalog_file))) as export:
+        return export.project
 
 
 def save_acd(project: RSLogix5000Content, output_path) -> None:
@@ -198,10 +192,7 @@ class ImportProjectFromFile(ImportProject):
     catalog_file: Union[PathLike, dict, None] = None
 
     def import_project(self) -> RSLogix5000Content:
-        # Import Project Interface
-        table = _resolve_catalog_table(self.catalog_file)
-        export = ExportL5x(self.filename, _catalog_table=table)
-        return export.project
+        return load_acd(self.filename, catalog_file=self.catalog_file)
 
 
 @dataclass
@@ -286,22 +277,22 @@ class DumpCompsRecordsToFile(ExportProject):
     output_directory: PathLike
 
     def extract(self):
-        export = ExportL5x(self.filename)
-        # The README documents dumping to a fresh directory
-        # (DumpCompsRecordsToFile("My.ACD", "output/")). Ensure that directory
-        # exists before writing output.log into it; previously a non-existent
-        # output_directory raised FileNotFoundError.
-        os.makedirs(self.output_directory, exist_ok=True)
-        with open(
-            os.path.join(self.output_directory, "output.log"),
-            "w",
-        ) as log_file:
-            # Write the record tree into the same output_directory (previously
-            # it defaulted to "./dump", so output.log and the tree ended up in
-            # different places).
-            DumpCompsRecords(
-                export._cur, 0, base_directory=self.output_directory
-            ).dump(log_file=log_file)
+        with closing(ExportL5x(self.filename)) as export:
+            # The README documents dumping to a fresh directory
+            # (DumpCompsRecordsToFile("My.ACD", "output/")). Ensure that directory
+            # exists before writing output.log into it; previously a non-existent
+            # output_directory raised FileNotFoundError.
+            os.makedirs(self.output_directory, exist_ok=True)
+            with open(
+                os.path.join(self.output_directory, "output.log"),
+                "w",
+            ) as log_file:
+                # Write the record tree into the same output_directory (previously
+                # it defaulted to "./dump", so output.log and the tree ended up in
+                # different places).
+                DumpCompsRecords(
+                    export._cur, 0, base_directory=self.output_directory
+                ).dump(log_file=log_file)
 
 
 @dataclass

@@ -48,12 +48,12 @@ class Unzip:
         self._filename = Path(filename)
         self._read()
 
-    def write_files(self, directory: os.PathLike):
+    def write_files(self, directory: os.PathLike, *, overwrite: bool = True):
         Path(directory).mkdir(parents=True, exist_ok=True)
         with open(self._filename, "rb") as f:
             for record in self.records:
                 f.seek(record.file_offset)
-                with open(os.path.join(directory, record.filename), "wb") as out_file:
+                with open(os.path.join(directory, record.filename), "wb" if overwrite else "xb") as out_file:
                     if f.read(2) == b"\x1f\x8b":
                         # Uncompress the files with gzip compression, the magic number is handy here.
                         f.seek(record.file_offset)
