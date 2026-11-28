@@ -101,6 +101,10 @@ def assess(project):
             add('keying', module.name, 'Module electronic keying is unresolved')
         if getattr(module, '_bus_size_problem', None):
             add('module-bus', module.name, module._bus_size_problem)
+        for attr in ('_safety_network_problem', '_port_network_problem'):
+            problem = getattr(module, attr, None)
+            if problem:
+                add('module-safety-network', module.name, problem)
         if getattr(module, '_connections', []):
             add('module-configuration', module.name, 'Connection and I/O configuration are not fully decoded')
     for reason in getattr(controller, '_skipped_tags', []):
