@@ -57,10 +57,6 @@ class SbRegionRecord:
         if r.header.language_type not in ("Rung NT", "REGION NT"):
             return None
         text = r.record_buffer.decode("utf-16-le").rstrip("\x00")
-        for tag in re.findall("@[A-Za-z0-9]*@", text):
-            tag_id = int(tag[1:-1], 16)
-            name = name_lookup.get(tag_id)
-            if name is None:
-                break
-            text = text.replace(tag, name)
+        text = re.sub(r"@([0-9a-fA-F]{1,8})@",
+                      lambda match: name_lookup.get(int(match[1], 16), match[0]), text)
         return (r.header.identifier, text, "")

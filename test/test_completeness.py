@@ -107,4 +107,8 @@ def test_cli_incomplete_exit_and_sidecar(tmp_path, preview):
     issues = json.loads(Path(str(target) + '.diagnostics.json').read_text())['issues']
     graph = [i for i in issues if i['code'] == 'routine-body']
     assert any(i['owner'].endswith('/FBDRoutine') for i in graph)
-    assert any(i['owner'].endswith('/STRoutine') for i in graph)
+    assert not any(i['owner'].endswith('/STRoutine') for i in issues)
+    if preview:
+        import xml.etree.ElementTree as ET
+        lines = ET.parse(target).findall(".//Routine[@Name='STRoutine']/STContent/Line")
+        assert len(lines) == 6
