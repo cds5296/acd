@@ -98,6 +98,9 @@ def assess(project):
             add('catalog', module.name, 'Module catalog identity is unresolved')
         if not getattr(module, '_ekey_state', None):
             add('keying', module.name, 'Module electronic keying is unresolved')
+        for port_id in getattr(module, '_missing_slot_ports', []):
+            issues.append(dict(code='module-port-address', owner=module.name, port_id=port_id,
+                               reason='No source slot address for physical port'))
         if getattr(module, '_bus_size_problem', None):
             add('module-bus', module.name, module._bus_size_problem)
         if getattr(module, '_connections', []):
