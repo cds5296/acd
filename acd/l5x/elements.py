@@ -11,6 +11,7 @@ from pathlib import Path
 from sqlite3 import Cursor
 from typing import List, Tuple, Dict, Union, Optional
 
+from acd.l5x.safety_networks import decode as decode_safety_networks, port_attributes
 from acd.l5x.module_descriptor import ModuleDescriptorError, read_module_descriptor
 from loguru import logger as log
 
@@ -738,6 +739,9 @@ class Module(L5xElement):
             + f'MajorFault="{self.major_fault}"'
         )
 
+        if self._source_safety_network:
+            attrs += f' SafetyNetwork="{self._source_safety_network}"'
+
         # Optional <Description>
         desc_xml = ""
         if self._description:
@@ -793,7 +797,21 @@ class Module(L5xElement):
 
         return f'<Module {attrs}>{desc_xml}{ekey}{ports}{comm_xml}{ext_xml}</Module>'
 
+    _source_safety_network: Union[str, None] = None
+    _source_port_networks: Dict[int, str] = field(default_factory=dict)
+    _safety_network_problem: Union[str, None] = None
+
     def _build_ports_xml(self) -> str:
+        ports = self._physical_ports_xml()
+        self._port_network_problem = None
+        if self._source_port_networks:
+            try:
+                return port_attributes(ports, self._source_port_networks)
+            except ValueError as exc:
+                self._port_network_problem = str(exc)
+        return ports
+
+    def _physical_ports_xml(self) -> str:
         """Build the <Ports>...</Ports> XML section for this module.
 
         Looks up the port structure from PORT_STRUCTURES by (vendor, product_type,
@@ -1725,7 +1743,7 @@ class ModuleBuilder(L5xElementBuilder):
             connections.append((conn_name, "0.0", conn_type))
 
         from acd.l5x.module_inhibition import inhibition
-        return Module(
+        module = Module(
             name,           # L5xElement._name (private)
             name,           # Module.name
             catalog_number_for_identity(
@@ -1750,6 +1768,13 @@ class ModuleBuilder(L5xElementBuilder):
             _connections=connections,
             _extended_properties=extended_properties,
         )
+        try:
+            module._source_safety_network, module._source_port_networks = decode_safety_networks(
+                r.record_format_version, e1
+            )
+        except ValueError as exc:
+            module._safety_network_problem = str(exc)
+        return module
 
 
 @dataclass
@@ -3190,7 +3215,9 @@ class ControllerBuilder(L5xElementBuilder):
                     parsed, metadata = read_module_descriptor(raw)
                 except ModuleDescriptorError as exc:
                     module_issues.append(dict(code='module-descriptor', owner=db_name,
-                                              object_id=mod_oid, reason=str(exc)))
+                                              object_id=mod_oid, reason=str(exc),
+                                              affected_fields=['Identity', 'EKey', 'SafetyNetwork',
+                                                               'Ports/Port/@SafetyNetwork']))
                     continue
                 name = '?' if db_name.startswith('$') and db_name.endswith('$') else db_name
                 sources.append((name, mod_oid, parsed, metadata))
