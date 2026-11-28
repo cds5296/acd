@@ -243,3 +243,13 @@ def test_missing_module_link_in_compat_is_never_recovered_by_a_raw_tail_scan(gra
     decoder = build([21], [(21, _line('@0000001E@'))], layout='compat')
     assert decoder.decode_numbered(100) == [(0, '@0000001E@')]
     assert decoder.diagnostics[100][0]['reference_id'] == 30
+
+
+def test_compat_st_resolves_the_module_back_reference(graph):
+    cur, decoder = graph
+    module = bytearray(_rx(0x69, 0, [(0x140, struct.pack('<I',30)), (2,b'')]))
+    struct.pack_into('<H', module, 8, 166)
+    cur.execute('UPDATE comps SET record=? WHERE object_id=40', (module,))
+    d = decoder([22], [(22,_line('@0000001e@'))], layout='compat')
+    assert d.decode_numbered(100) == [(0, 'ActualModule')]
+    assert not d.diagnostics.get(100)

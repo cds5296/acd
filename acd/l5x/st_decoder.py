@@ -3,7 +3,7 @@
 Follow routine -> descriptor -> aspect -> source index -> line records. Index
 order, not database insertion order, determines source order. Unlike the upstream
 decoder, require the counted source-index layout and retain unreadable line
-positions in diagnostics. Resolve module-reference tags through their 0x66 link
+positions in diagnostics. Resolve module-reference tags through scoped source links
 to a module in the same controller; never rewrite names by prefix.
 
 Upstream: https://github.com/hutcheb/acd/pull/58 and /pull/68 (Apache-2.0).
@@ -12,8 +12,7 @@ import re
 import struct
 from collections import defaultdict
 
-from acd.record.attribute_bounds import AmbiguousModuleLink
-from acd.record.rx import RxGeneric, read_reference_record
+from acd.l5x.module_references import resolve
 
 
 _REFERENCE = re.compile(r"@([0-9a-fA-F]{1,8})@")
@@ -56,50 +55,11 @@ class STDecoder:
         self._comps = {oid: (parent, name, bytes(raw))
                        for oid, parent, name, raw in cur.fetchall()}
         self._names = dict(exporter._id_to_name)
-        self._bad_references = {}
+        self._bad_references = getattr(exporter, '_module_reference_issues', None)
+        if self._bad_references is None:
+            self._bad_references = resolve(cur, self._names)
         self.diagnostics = {}
         self._cache = {}
-        self._resolve_module_links()
-
-    def _resolve_module_links(self):
-        """Validate typed module references against actual module object IDs.
-
-        A modern RxTag with CIP type 0x1069 is a module reference. Attribute
-        0x66 is its target Comps object ID (not text or a display-name suffix).
-        Both collections must belong to the same controller. Ordinary tags and
-        authored strings remain untouched, even if they contain '__Map:'.
-        """
-        for oid, (parent, _name, raw) in self._comps.items():
-            collection = self._comps.get(parent)
-            if not collection or collection[1] != "RxTagCollection":
-                continue
-            try:
-                rx = read_reference_record(raw)
-            except AmbiguousModuleLink as exc:
-                self._names.pop(oid, None)
-                self._bad_references[oid] = str(exc)
-                continue
-            except Exception:
-                continue  # Names of ordinary records do not require Rx decoding.
-            if rx.cip_type != 0x6B or rx.main_record.cip_data_type != 0x1069:
-                continue
-            self._names.pop(oid, None)
-            try:
-                links = [bytes(a.value) for a in rx.extended_records
-                         if a.attribute_id == 0x66]
-                if len(links) != 1 or len(links[0]) != 4:
-                    raise ValueError("module reference has no unique four-byte 0x66 link")
-                target = self._comps.get(struct.unpack("<I", links[0])[0])
-                target_collection = self._comps.get(target[0]) if target else None
-                if (not target or not target_collection
-                        or target_collection[1] != "RxMapDeviceCollection"
-                        or target_collection[0] != collection[0]
-                        or RxGeneric.from_bytes(target[2]).cip_type != 0x69
-                        or not target[1]):
-                    raise ValueError("module reference target is not a module in this controller")
-                self._names[oid] = target[1]
-            except Exception as exc:
-                self._bad_references[oid] = str(exc)
 
     def _index(self, oid):
         raw = self._records[oid]
