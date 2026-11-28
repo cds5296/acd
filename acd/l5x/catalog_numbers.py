@@ -57,45 +57,54 @@ CATALOG_NUMBERS: Dict[Tuple[int, int, int], str] = {
 }
 
 
-def _identity_key_from_any(raw: object) -> Optional[Tuple[int, int, int]]:
-    """Coerce a catalog key into an (int, int, int) identity, or None.
+def _identity_key_from_any(raw: object) -> Optional[Tuple[int, ...]]:
+    """Coerce a catalog key into an identity tuple, or None.
 
-    Accepts the two natural JSON shapes: a 3-element array/tuple
-    ``[vendor, product_type, product_code]`` or an object
-    ``{"vendor": v, "product_type": t, "product_code": c}``. Returns None
-    when the shape is unrecognised so the caller can raise a clear error.
+    Accepts the two natural JSON shapes: a 3- or 4-element array/tuple
+    ``[vendor, product_type, product_code]`` (or with major_revision as 4th)
+    or an object ``{"vendor": v, "product_type": t, "product_code": c}``
+    (optionally with ``"major_revision": m``). Returns None when the shape is
+    unrecognised so the caller can raise a clear error.
     """
-    if isinstance(raw, (list, tuple)) and len(raw) == 3:
+    if isinstance(raw, (list, tuple)) and len(raw) in (3, 4):
         try:
-            return (int(raw[0]), int(raw[1]), int(raw[2]))
+            return tuple(int(x) for x in raw)
         except (TypeError, ValueError):
             return None
     if isinstance(raw, dict):
         try:
-            return (
-                int(raw["vendor"]),
-                int(raw["product_type"]),
-                int(raw["product_code"]),
-            )
+            v = int(raw["vendor"])
+            t = int(raw["product_type"])
+            c = int(raw["product_code"])
+            m = raw.get("major_revision")
+            if m is not None:
+                return (v, t, c, int(m))
+            return (v, t, c)
         except (KeyError, TypeError, ValueError):
             return None
     return None
 
 
-def load_external_catalog(path: str) -> Dict[Tuple[int, int, int], str]:
+
+def load_external_catalog(path: str) -> Dict[Tuple[int, ...], str]:
     """Load and validate a JSON catalog of CIP identity → catalog number.
 
-    The file is a mapping from an identity triple to a catalog-number string.
+    The file is a mapping from an identity key to a catalog-number string.
     Two key shapes are accepted (per entry, or as a single wrapper):
       * array:  ``{"1:12:166": "1756-EN2T"}`` or ``{"entries": {"1:12:166": ...}}``
       * object: ``{"1:12:166": "1756-EN2T"}`` where the key is
                 ``"vendor:product_type:product_code"`` (e.g. ``"1:12:166"``)
 
-    The colon-joined string form is chosen deliberately: identity triples are
-    stable, sortable, and unambiguous when written as ``v:t:c``. Every value
-    must be a non-empty string; every key must parse as three non-negative
-    integers. The result is a plain dict keyed by the (v, t, c) tuple, ready
-    to be passed to ``catalog_number_for_identity(table=...)`` or merged over
+    4-part keys ``"vendor:product_type:product_code:major_revision"`` (e.g.
+    ``"1:12:196:5"``) are also accepted and take priority over 3-part keys
+    during lookup, enabling revision-letter disambiguation.
+
+    The colon-joined string form is chosen deliberately: identity keys are
+    stable, sortable, and unambiguous when written as ``v:t:c`` or
+    ``v:t:c:major``. Every value must be a non-empty string; every key must
+    parse as three or four non-negative integers. The result is a plain dict
+    keyed by the identity tuple, ready to be passed to
+    ``catalog_number_for_identity(table=...)`` or merged over
     ``CATALOG_NUMBERS``.
 
     This is the extension point for a shared, richer catalog (Rockwell's own
@@ -110,7 +119,7 @@ def load_external_catalog(path: str) -> Dict[Tuple[int, int, int], str]:
     if "entries" in data and isinstance(data.get("entries"), dict):
         data = data["entries"]
 
-    out: Dict[Tuple[int, int, int], str] = {}
+    out: Dict[Tuple[int, ...], str] = {}
     for key, value in data.items():
         # Allow "_"-prefixed metadata keys (e.g. "_comment") for documentation
         # inside the JSON; they are skipped, not validated, so a file can carry
@@ -119,7 +128,7 @@ def load_external_catalog(path: str) -> Dict[Tuple[int, int, int], str]:
             continue
         identity = _identity_key_from_any(key)
         if identity is None:
-            # Try the "v:t:c" string form.
+            # Try the "v:t:c" or "v:t:c:major" string form.
             identity = _parse_colon_key(key)
         if identity is None:
             raise CatalogError(
@@ -130,30 +139,31 @@ def load_external_catalog(path: str) -> Dict[Tuple[int, int, int], str]:
                 f"catalog value for identity {identity} must be a non-empty "
                 f"string in {path}"
             )
-        v, t, c = identity
-        if v < 0 or t < 0 or c < 0:
+        if any(x < 0 for x in identity):
             raise CatalogError(f"identity {identity} has a negative component in {path}")
         out[identity] = value.strip()
     return out
 
 
-def _parse_colon_key(key: object) -> Optional[Tuple[int, int, int]]:
-    """Parse a ``"vendor:product_type:product_code"`` string key."""
+
+def _parse_colon_key(key: object) -> Optional[Tuple[int, ...]]:
+    """Parse a ``"v:t:c"`` or ``"v:t:c:major"`` string key."""
     if not isinstance(key, str):
         return None
     parts = key.split(":")
-    if len(parts) != 3:
+    if len(parts) not in (3, 4):
         return None
     try:
-        return (int(parts[0]), int(parts[1]), int(parts[2]))
+        return tuple(int(p) for p in parts)
     except ValueError:
         return None
 
 
+
 def merge_catalog(
-    base: Optional[Dict[Tuple[int, int, int], str]] = None,
-    overrides: Optional[Dict[Tuple[int, int, int], str]] = None,
-) -> Dict[Tuple[int, int, int], str]:
+    base: Optional[Dict[Tuple[int, ...], str]] = None,
+    overrides: Optional[Dict[Tuple[int, ...], str]] = None,
+) -> Dict[Tuple[int, ...], str]:
     """Return a new table = ``base`` with ``overrides`` applied on top.
 
     ``base`` defaults to the built-in ``CATALOG_NUMBERS``. ``overrides``
@@ -166,6 +176,7 @@ def merge_catalog(
     merged = dict(base)
     merged.update(overrides)
     return merged
+
 
 
 def _fallback_catalog_number(identity: Tuple[int, int, int]) -> str:
@@ -193,13 +204,18 @@ def _fallback_catalog_number(identity: Tuple[int, int, int]) -> str:
 
 def catalog_number_for_identity(
     identity: Tuple[int, int, int],
-    table: Optional[Dict[Tuple[int, int, int], str]] = None,
+    table: Optional[Dict[Tuple[int, ...], str]] = None,
+    major_revision: Optional[int] = None,
 ) -> str:
     """Resolve the CatalogNumber string for a CIP identity triple.
 
     Resolution order:
-      1. the ``table`` (default: the built-in ``CATALOG_NUMBERS``), or
-      2. a structured ``CIP-<vendor>-<type>-<code>`` placeholder.
+      1. ``(vendor, product_type, product_code, major_revision)`` 4-tuple in
+         ``table`` (only when ``major_revision`` is provided) — revision-specific
+         match enabling /B vs /C disambiguation;
+      2. ``(vendor, product_type, product_code)`` 3-tuple in ``table`` — base
+         match (default: the built-in ``CATALOG_NUMBERS``);
+      3. a structured ``CIP-<vendor>-<type>-<code>`` placeholder.
 
     To use a richer/shared catalog (Rockwell's own data, or the module
     templates aei-logix5000 extracts), load it with
@@ -226,6 +242,11 @@ def catalog_number_for_identity(
         table = CATALOG_NUMBERS
     if identity == (0, 0, 0):
         return ""
+    # Try revision-specific 4-tuple first (e.g. for /B vs /C disambiguation)
+    if major_revision is not None:
+        specific = (*identity, major_revision)
+        if specific in table:
+            return table[specific]
     if identity in table:
         return table[identity]
     return _fallback_catalog_number(identity)
