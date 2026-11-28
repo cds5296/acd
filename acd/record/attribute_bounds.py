@@ -34,6 +34,14 @@ def attribute_layout(name=None):
 COUNTED_TYPES = {0x68, 0x69, 0x6A, 0x6B, 0x6C, 0x338}
 
 
+class DuplicateModuleDescriptor(ValueError):
+    """Retain the validated extent for a scoped module diagnostic."""
+
+    def __init__(self, bounded_end):
+        super().__init__('Duplicate module descriptor')
+        self.bounded_end = bounded_end
+
+
 class AmbiguousModuleLink(ValueError):
     """A typed module reference contains competing forward links."""
 
@@ -70,5 +78,7 @@ def complete_attributes(raw):
                 and struct.unpack_from("<H", raw, 66)[0] == 0x1069
                 and sum(key == 0x66 for key, _ in attrs) > 1):
             raise AmbiguousModuleLink(position)
+        if struct.unpack_from('<H', raw, 10)[0] == 0x69 and sum(key == 1 for key, _ in attrs) > 1:
+            raise DuplicateModuleDescriptor(position)
         raise ValueError('Duplicate counted Rx attribute identity')
     return position, attrs

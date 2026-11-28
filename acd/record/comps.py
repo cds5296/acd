@@ -101,12 +101,12 @@ class CompsRecord:
             # Preserve the generic FAFA parser's contract. Only a complete,
             # independently bounded typed Rx record can expose more source data.
             from acd.record.attribute_bounds import (
-                AmbiguousModuleLink, complete_attributes, counted_layout_enabled,
+                AmbiguousModuleLink, DuplicateModuleDescriptor, complete_attributes, counted_layout_enabled,
             )
             try:
                 bounded = complete_attributes(raw[148:]) if counted_layout_enabled() else None
                 extent = bounded[0] if bounded is not None else None
-            except AmbiguousModuleLink as exc:
+            except (AmbiguousModuleLink, DuplicateModuleDescriptor) as exc:
                 extent = exc.bounded_end
             if extent is not None:
                 end = 148 + extent

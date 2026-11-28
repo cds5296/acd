@@ -11,6 +11,7 @@ from pathlib import Path
 from sqlite3 import Cursor
 from typing import List, Tuple, Dict, Union, Optional
 
+from acd.l5x.module_descriptor import ModuleDescriptorError, read_module_descriptor
 from loguru import logger as log
 
 from acd.l5x.catalog_numbers import CATALOG_NUMBERS, catalog_number_for_identity
@@ -703,7 +704,7 @@ class Module(L5xElement):
     inhibited: Union[str, None]
     major_fault: str
     # Private fields (not serialised as XML attributes)
-    _ekey_state: str = field(default="CompatibleModule")
+    _ekey_state: Union[str, None] = None
     _slot: int = field(default=0xFFFFFFFF)
     _ip_address: str = field(default="")
     _backplane_slot: Union[int, None] = field(default=None)
@@ -742,7 +743,7 @@ class Module(L5xElement):
         if self._description:
             desc_xml = f'<Description>\n<![CDATA[{self._description}]]>\n</Description>'
 
-        ekey = f'<EKey State="{self._ekey_state}"/>'
+        ekey = f'<EKey State="{self._ekey_state}"/>' if self._ekey_state else ""
         ports = self._build_ports_xml()
 
         # <Communications> section — only emitted when a CommMethod is known.
@@ -1600,30 +1601,13 @@ class ModuleBuilder(L5xElementBuilder):
         return None
 
     def build(self) -> Module:
-        self._cur.execute(
-            "SELECT comp_name, object_id, record FROM comps WHERE object_id=" + str(self._object_id)
-        )
-        row = self._cur.fetchone()
-        db_name = row[0]
-        raw_rec = bytes(row[2])
+        self._cur.execute("SELECT comp_name, record FROM comps WHERE object_id=?", (self._object_id,))
+        db_name, raw = self._cur.fetchone()
+        parsed, metadata = read_module_descriptor(raw)
+        return self.build_from_descriptor(db_name, parsed, metadata)
 
-        # Hex-encoded names like $02cc5e9d$ are unnamed peripheral modules (drive expansion
-        # cards, etc.).  Logix Designer exports these with Name="?".
-        name = "?" if (db_name.startswith("$") and db_name.endswith("$")) else db_name
-
-        try:
-            r = RxGeneric.from_bytes(raw_rec)
-        except Exception:
-            return Module(name, name, "", 0, 0, 0, 0, 0, "Local", 1, "false", "false")
-
-        if r.cip_type != 0x69:
-            return Module(name, name, "", 0, 0, 0, 0, 0, "Local", 1, "false", "false")
-
-        exts: Dict[int, bytes] = {er.attribute_id: bytes(er.value) for er in r.extended_records}
-        e1 = exts.get(0x001, b"")
-        if len(e1) < 0x30:
-            major_fault = "true" if name == "Local" else "false"
-            return Module(name, name, "", 0, 0, 0, 0, 0, "Local", 1, "false", major_fault)
+    def build_from_descriptor(self, db_name, r, e1) -> Module:
+        name = "?" if db_name.startswith("$") and db_name.endswith("$") else db_name
 
         vendor        = struct.unpack("<H", e1[0x02:0x04])[0]
         product_type  = struct.unpack("<H", e1[0x04:0x06])[0]
@@ -1644,13 +1628,17 @@ class ModuleBuilder(L5xElementBuilder):
 
         # Resolve parent module name from the modid→name map built by ControllerBuilder.
         if parent_modid not in self._modid_to_name:
-            raise ValueError('Unresolved module parent identity')
+            raise ModuleDescriptorError('Unresolved module parent identity')
         parent_name = self._modid_to_name[parent_modid]
 
         # MajorFault=true for the root controller module: its parent resolves to itself.
         major_fault = "true" if parent_name == name else "false"
-        # bit 2 (0x04) of e1[0] → EKey Disabled (Local=0x06→Disabled, EN2T=0x11→CompatibleModule).
-        ekey_state  = "Disabled" if (e1[0] & 0x04) else "CompatibleModule"
+        from acd.l5x.keying import electronic_keying
+        try:
+            ekey_state = electronic_keying(e1)
+        except ValueError as exc:
+            log.warning("Unresolved electronic keying: {}", exc)
+            ekey_state = None
 
         # IP address: stored at e1[0x30] as a u16 length-prefixed ASCII string for modules
         # that connect via Ethernet upstream (parent_port == 2). Local backplane bridge
@@ -3183,6 +3171,7 @@ class ControllerBuilder(L5xElementBuilder):
             + " AND comp_name='RxMapDeviceCollection'"
         )
         row = self._cur.fetchone()
+        module_issues = []
         if row is None:
             modules: List[Module] = []
         else:
@@ -3195,20 +3184,27 @@ class ControllerBuilder(L5xElementBuilder):
             mod_rows = self._cur.fetchall()
 
             from acd.l5x.module_parents import parent_names
-            modid_to_name = parent_names([
-                ('?' if db_name.startswith('$') and db_name.endswith('$') else db_name,
-                 RxGeneric.from_bytes(bytes(mod_rec)))
-                for db_name, mod_oid, mod_rec in mod_rows])
+            sources = []
+            for db_name, mod_oid, raw in mod_rows:
+                try:
+                    parsed, metadata = read_module_descriptor(raw)
+                except ModuleDescriptorError as exc:
+                    module_issues.append(dict(code='module-descriptor', owner=db_name,
+                                              object_id=mod_oid, reason=str(exc)))
+                    continue
+                name = '?' if db_name.startswith('$') and db_name.endswith('$') else db_name
+                sources.append((name, mod_oid, parsed, metadata))
 
-            # Second pass: build Module objects.
+            modid_to_name = parent_names([(name, parsed) for name, _, parsed, _ in sources])
             modules = []
-            for _, mod_oid, _ in mod_rows:
-                modules.append(
-                    ModuleBuilder(
-                        self._cur, mod_oid, modid_to_name,
-                        _catalog_table=self._catalog_table,
-                    ).build()
-                )
+            for name, mod_oid, parsed, metadata in sources:
+                builder = ModuleBuilder(self._cur, mod_oid, modid_to_name,
+                                        _catalog_table=self._catalog_table)
+                try:
+                    modules.append(builder.build_from_descriptor(name, parsed, metadata))
+                except ModuleDescriptorError as exc:
+                    module_issues.append(dict(code='module-descriptor', owner=name,
+                                              object_id=mod_oid, reason=str(exc)))
 
             # Third pass: compute (parent_name, parent_port_id) → child count,
             # then inject the relevant sub-dict into each Module as _port_child_counts.
@@ -3309,6 +3305,7 @@ class ControllerBuilder(L5xElementBuilder):
         )
         # Diagnostics: controller-scoped tags that could not be faithfully
         # reconstructed (see the tag loop above). Empty when everything parsed.
+        controller._module_issues = module_issues
         controller._skipped_tags = skipped_tags
         from acd.l5x.controller_fields import description_xml, topology
         controller._description_xml = description_xml(comment_results)

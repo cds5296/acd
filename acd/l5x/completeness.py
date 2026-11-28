@@ -89,6 +89,7 @@ def assess(project):
                     issues.append(dict(code='ladder-reference', scope=scope, owner=owner.name,
                                        routine=routine.name, rung_number=number, reference_id=oid,
                                        reason=reference_errors.get(oid, 'Unresolved object reference')))
+    issues.extend(getattr(controller, '_module_issues', []))
     for module in controller.modules:
         if getattr(module, 'inhibited', False) is None:
             add('module-inhibition', module.name, 'Unsupported module inhibition layout')
