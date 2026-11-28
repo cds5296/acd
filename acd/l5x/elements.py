@@ -799,6 +799,7 @@ class Module(L5xElement):
         product_code). Falls back to <Ports/> if the catalog number is not in the table.
         """
         key = (self.vendor, self.product_type, self.product_code)
+        self._missing_slot_ports = []
         port_defs = PORT_STRUCTURES.get(key)
         if port_defs is None:
             return '<Ports/>'
@@ -824,11 +825,14 @@ class Module(L5xElement):
             if pd.address_mode == "omit":
                 addr_attr = ""
             elif pd.address_mode == "slot":
-                # Non-upstream ICP ports (remote chassis owner): use _backplane_slot if known.
-                if upstream_str == "false" and self._backplane_slot is not None:
-                    addr_attr = f' Address="{self._backplane_slot}"'
+                slot = self._slot
+                if upstream_str == "false" and self._backplane_slot not in (None, 0xffff):
+                    slot = self._backplane_slot
+                if slot in (None, 0xffffffff):
+                    self._missing_slot_ports.append(pd.port_id)
+                    addr_attr = ""
                 else:
-                    addr_attr = f' Address="{self._slot if self._slot != 0xFFFFFFFF else 0}"'
+                    addr_attr = f' Address="{slot}"'
             elif pd.address_mode == "zero":
                 addr_attr = ' Address="0"'
             else:  # "empty" — use IP from binary if present, else omit value
